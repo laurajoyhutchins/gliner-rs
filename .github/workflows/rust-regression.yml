@@ -24,3 +24,5 @@ jobs:
         run: python3 -m py_compile benchmarks/compare.py benchmarks/compare_rust_revisions.py
       - name: Offline-independent library regression tests
         run: cargo test --locked --release --lib
+      - name: Verify opt-in batch benchmark compiles
+        run: cargo check --locked --example bench_bucketed

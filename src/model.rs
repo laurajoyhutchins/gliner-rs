@@ -180,6 +180,17 @@ impl GLiNER2 {
         }
     }
 
+    /// Encode mixed-length documents in bounded length groups, eliminating
+    /// excessive attention computation on padding. Results keep caller order.
+    /// Opt-in: `extract_batch` remains the existing API.
+    pub fn extract_batch_bucketed(&self, texts: &[&str], schema: &Schema, opts: &ExtractOptions) -> Result<Vec<Value>> {
+        match self {
+            Self::Boundary(m) => m.extract_batch_bucketed(texts, schema, opts),
+            // Preserve the span architecture's separately implemented path.
+            Self::Span(m) => m.extract_batch(texts, schema, opts),
+        }
+    }
+
     /// [`Self::extract_entities`] for documents longer than the encoder's
     /// context: `text` is split into overlapping word chunks (`chunk_opts`),
     /// each chunk is extracted independently, and spans are remapped to
@@ -329,6 +340,30 @@ fn argmax(xs: &[f32]) -> usize {
         }
     }
     best
+}
+
+/// Group indices by encoded token length, max eight rows per batch, at most
+/// 25% padding spread, and bounded quadratic attention work. A single long
+/// sequence may exceed the batch budget, but it is never grouped with peers.
+fn length_bucket_groups(lengths: &[usize]) -> Vec<Vec<usize>> {
+    let mut order: Vec<usize> = (0..lengths.len()).collect();
+    order.sort_by_key(|&i| (lengths[i], i));
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    for index in order {
+        let add = groups.last().is_some_and(|group| {
+            let size = group.len() + 1;
+            let tokens = lengths[index];
+            size <= 8
+                && tokens <= lengths[group[0]] + lengths[group[0]] / 4
+                && size.saturating_mul(tokens.saturating_mul(tokens)) <= 1_000_000
+        });
+        if add {
+            groups.last_mut().expect("group exists").push(index);
+        } else {
+            groups.push(vec![index]);
+        }
+    }
+    groups
 }
 
 /// `(surface, confidence, char start, char end)`.
@@ -607,6 +642,25 @@ impl BoundaryModel {
             texts.iter().map(|text| self.processor.prepare(text, schema, opts.max_words)).collect::<Result<_>>()?;
         let states = self.encode_batch(&inputs)?;
         inputs.iter().zip(states.iter()).map(|(input, states)| self.extract_from_states(input, states, schema, opts)).collect()
+    }
+
+    /// Run a heterogeneous document batch in length-compatible minibatches.
+    /// Each result is mapped back to its original index.
+    pub fn extract_batch_bucketed(&self, texts: &[&str], schema: &Schema, opts: &ExtractOptions) -> Result<Vec<Value>> {
+        if texts.is_empty() { return Ok(Vec::new()); }
+        let inputs: Vec<PreparedInput> = texts.iter()
+            .map(|text| self.processor.prepare(text, schema, opts.max_words))
+            .collect::<Result<_>>()?;
+        let lengths: Vec<usize> = inputs.iter().map(|i| i.input_ids.len()).collect();
+        let mut results: Vec<Option<Value>> = vec![None; texts.len()];
+        for group in length_bucket_groups(&lengths) {
+            let batch: Vec<PreparedInput> = group.iter().map(|&index| inputs[index].clone()).collect();
+            let states = self.encode_batch(&batch)?;
+            for (local, &original) in group.iter().enumerate() {
+                results[original] = Some(self.extract_from_states(&batch[local], &states[local], schema, opts)?);
+            }
+        }
+        results.into_iter().map(|v| v.ok_or_else(|| anyhow!("missing batch result"))).collect()
     }
 
     fn extract_from_states(&self, input: &PreparedInput, states: &Tensor, schema: &Schema, opts: &ExtractOptions) -> Result<Value> {
@@ -1670,4 +1724,28 @@ fn greedy_suppress(mut candidates: Vec<ScoredSpan>) -> Vec<ScoredSpan> {
         kept.push(cand);
     }
     kept
+}
+
+#[cfg(test)]
+mod length_bucket_regression {
+    use super::length_bucket_groups;
+
+    #[test]
+    fn buckets_preserve_indices_and_bound_padding_work() {
+        let lengths = [20, 80, 22, 170, 25, 100, 20, 240, 90, 22, 200, 20];
+        let groups = length_bucket_groups(&lengths);
+        let mut indices = groups.iter().flatten().copied().collect::<Vec<_>>();
+        indices.sort_unstable();
+        assert_eq!(indices, (0..lengths.len()).collect::<Vec<_>>());
+        for group in groups {
+            let smallest = lengths[group[0]];
+            assert!(group.len() <= 8);
+            assert!(group.iter().all(|&i| lengths[i] <= smallest + smallest / 4));
+            let max = *group.iter().map(|&i| &lengths[i]).max().unwrap();
+            if group.len() > 1 { assert!(group.len() * max * max <= 1_000_000); }
+        }
+        assert!(length_bucket_groups(&[]).is_empty());
+        assert_eq!(length_bucket_groups(&[3000, 3000]), vec![vec![0], vec![1]]);
+        assert_eq!(length_bucket_groups(&[0, 0, 0]).len(), 1);
+    }
 }

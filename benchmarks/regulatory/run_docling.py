@@ -44,52 +44,100 @@ def parse_pages(spec: str) -> list[int]:
 
 
 def extract_page(document: dict, page: int) -> tuple[list[str], int]:
-    """Validate source-page attribution; fail if any structured table loses rows."""
+    """Preserve Docling body reading order, including nested groups and tables."""
     if document.get("schema_name") != "DoclingDocument":
         raise ValueError("not a DoclingDocument JSON export")
     if str(page) not in document.get("pages", {}):
         raise ValueError(f"Docling did not preserve original page {page}")
-    if not isinstance(document.get("texts"), list) or not isinstance(document.get("tables"), list):
-        raise ValueError("missing Docling text/table collections")
+    for name in ("texts", "tables", "groups"):
+        if not isinstance(document.get(name), list):
+            raise ValueError(f"Docling document lacks {name} collection")
+    body = document.get("body")
+    if not isinstance(body, dict) or not isinstance(body.get("children"), list):
+        raise ValueError("Docling document has no ordered body references")
+
+    visited: set[str] = set()
     blocks: list[str] = []
-    for item in document["texts"]:
-        if not isinstance(item, dict):
-            raise ValueError("invalid Docling text item")
-        text = item.get("text", "")
-        if not isinstance(text, str) or not text.strip():
-            continue
+    table_count = 0
+
+    def page_numbers(item: dict) -> set[int]:
         provenance = item.get("prov")
         if not isinstance(provenance, list) or not provenance:
-            raise ValueError("text item lacks page provenance")
-        assigned = {p.get("page_no") for p in provenance if isinstance(p, dict)}
-        if page in assigned:
-            blocks.append(text)
-        elif assigned:
-            raise ValueError(f"unexpected page attribution: {assigned}")
-    for table in document["tables"]:
-        if not isinstance(table, dict):
-            raise ValueError("invalid Docling table item")
-        provenance = table.get("prov")
-        assigned = {p.get("page_no") for p in provenance or [] if isinstance(p, dict)}
-        if page not in assigned:
-            raise ValueError("Docling table lacks expected page provenance")
-        data = table.get("data") or {}
-        cells = data.get("table_cells") if isinstance(data, dict) else None
-        if not isinstance(cells, list) or not cells:
-            raise ValueError("Docling table missing structured table_cells")
-        rows = defaultdict(list)
-        for cell in cells:
-            row = cell.get("start_row_offset_idx")
-            col = cell.get("start_col_offset_idx")
-            value = cell.get("text")
-            if not isinstance(row, int) or not isinstance(col, int) or not isinstance(value, str):
-                raise ValueError("Docling table cell lost grid indices or text")
-            rows[row].append((col, value))
-        for _, fields in sorted(rows.items()):
-            blocks.append(" | ".join(text for _, text in sorted(fields)))
+            raise ValueError("Docling content item lacks page provenance")
+        numbers = {entry.get("page_no") for entry in provenance if isinstance(entry, dict)}
+        if numbers != {page}:
+            raise ValueError(f"Docling content attribution differs from page {page}")
+        return numbers
+
+    def visit(node: dict) -> None:
+        nonlocal table_count
+        if not isinstance(node, dict) or not isinstance(node.get("$ref"), str):
+            raise ValueError("invalid Docling document-body reference")
+        ref = node["$ref"]
+        if ref in visited:
+            return
+        visited.add(ref)
+        parts = ref.split("/")
+        if len(parts) != 3 or parts[0] != "#" or parts[1] not in ("texts", "tables", "groups"):
+            raise ValueError(f"unsupported Docling content reference: {ref}")
+        kind = parts[1]
+        if not parts[2].isdigit():
+            raise ValueError("invalid Docling content index")
+        index = int(parts[2])
+        entries = document[kind]
+        if index >= len(entries):
+            raise ValueError("dangling Docling content reference")
+        item = entries[index]
+        if not isinstance(item, dict):
+            raise ValueError("invalid Docling item")
+        if item.get("self_ref", ref) != ref:
+            raise ValueError("Docling self_ref disagrees with body reference")
+
+        if kind == "groups":
+            children = item.get("children")
+            if not isinstance(children, list):
+                raise ValueError("Docling group has no ordered children")
+            for child in children:
+                visit(child)
+        elif kind == "texts":
+            text = item.get("text")
+            if not isinstance(text, str):
+                raise ValueError("Docling text must be a string")
+            page_numbers(item)
+            if text.strip():
+                blocks.append(text)
+        else:
+            page_numbers(item)
+            data = item.get("data") or {}
+            cells = data.get("table_cells") if isinstance(data, dict) else None
+            if not isinstance(cells, list) or not cells:
+                raise ValueError("Docling table has no indexed cell data")
+            rows = defaultdict(list)
+            for cell in cells:
+                if not isinstance(cell, dict):
+                    raise ValueError("invalid Docling table cell")
+                row = cell.get("start_row_offset_idx")
+                col = cell.get("start_col_offset_idx")
+                text = cell.get("text")
+                if not isinstance(row, int) or not isinstance(col, int) or not isinstance(text, str):
+                    raise ValueError("Docling table cell missing row/column/text")
+                rows[row].append((col, text))
+            for _, columns in sorted(rows.items()):
+                blocks.append(" | ".join(value for _, value in sorted(columns)))
+            table_count += 1
+            for child in item.get("children", []):
+                visit(child)
+
+    for child in body["children"]:
+        visit(child)
+    # Fail closed on unattached body text/table nodes, not Docling furniture.
+    for kind in ("texts", "tables"):
+        for i, item in enumerate(document[kind]):
+            if item.get("content_layer", "body") == "body" and f"#/{kind}/{i}" not in visited:
+                raise ValueError(f"unreferenced Docling body {kind} node {i}")
     if not blocks:
-        raise ValueError(f"Docling returned no usable content for page {page}")
-    return blocks, len(document["tables"])
+        raise ValueError(f"no Docling body content on page {page}")
+    return blocks, table_count
 
 
 def run(argv=None):

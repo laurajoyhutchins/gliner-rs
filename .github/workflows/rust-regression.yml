@@ -1,0 +1,26 @@
+name: Rust inference regression
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'benchmarks/**'
+      - '.github/workflows/rust-regression.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  library-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Syntax-check benchmark entry points
+        run: python3 -m py_compile benchmarks/compare.py benchmarks/compare_rust_revisions.py
+      - name: Offline-independent library regression tests
+        run: cargo test --locked --release --lib

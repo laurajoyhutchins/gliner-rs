@@ -2,28 +2,29 @@ apiVersion: v3.2.0
 kind: DataContract
 id: urn:datacontract:gliner-rs:docling-document-export
 name: DoclingDocument page-provenance extraction
-version: 1.0.0
+version: 1.1.0
 status: active
 description:
   purpose: >-
-    Contract between Docling document conversion and GLiNER regulatory extraction.
-    Docling preserves the PDF's original 1-based page number and structured
-    table-cell coordinates. The companion JSON Schema validates the consumed
-    DoclingDocument projection before any model input is produced.
+    Docling-to-GLiNER JSON contract for source-bound page, text, reading-order,
+    and structured-table data. The adjacent Draft 2020-12 JSON Schema is the
+    machine-executable validation boundary.
   limitations: >-
-    Text-layer-only extraction cannot reconstruct layout tables. Standard
-    extraction requires independently installed Docling ONNX layout/OCR assets.
-    No GLiNER inference outcome is a legal or engineering compliance judgment.
+    Conversion output is not independently reviewed engineering evidence.
+    Licensed source content remains private. Only the producer's standard
+    mode runs layout, TableFormer, and OCR models.
 servers:
   - server: private-local-files
     type: local
-    description: Private JSON DoclingDocument export, never committed to GitHub
+    format: json
+    path: benchmarks/regulatory/private-codebook/nec2017-layout/docling-pages/*.json
+    description: Local private Docling JSON exports; never upload to public CI
 schema:
   - name: DoclingDocument
+    logicalType: object
     description: >-
-      DoclingDocument JSON. The authoritative machine-checkable interface is
-      contracts/docling-export.schema.json, Draft 2020-12. Only the referenced
-      fields are consumed; additional standard Docling fields are preserved.
+      DoclingDocument structure with original physical page provenance.
+      Additional producer fields are accepted by its JSON Schema.
     properties:
       - name: schema_name
         logicalType: string
@@ -33,14 +34,95 @@ schema:
         logicalType: string
         required: true
       - name: pages
+        logicalType: map
+        required: true
+        map:
+          key:
+            logicalType: string
+            description: Original physical PDF page index encoded as string
+          value:
+            logicalType: object
+            properties:
+              - name: page_no
+                logicalType: integer
+                required: true
+      - name: body
         logicalType: object
         required: true
-        description: Mapping of original physical PDF page numbers
+        properties:
+          - name: children
+            logicalType: array
+            required: true
+            description: Ordered references into texts, groups, and tables
+            items:
+              logicalType: object
+      - name: groups
+        logicalType: array
+        required: true
+        items:
+          logicalType: object
+          properties:
+            - name: children
+              logicalType: array
+              required: true
+              items:
+                logicalType: object
       - name: texts
         logicalType: array
         required: true
-        description: Text items with prov.page_no
+        items:
+          logicalType: object
+          properties:
+            - name: text
+              logicalType: string
+              required: true
+            - name: prov
+              logicalType: array
+              required: true
+              description: Original physical page numbers and source bounding boxes
+              items:
+                logicalType: object
       - name: tables
         logicalType: array
         required: true
-        description: Table items containing page provenance and grid-indexed cells
+        items:
+          logicalType: object
+          properties:
+            - name: prov
+              logicalType: array
+              required: true
+              items:
+                logicalType: object
+            - name: data
+              logicalType: object
+              required: true
+              properties:
+                - name: num_rows
+                  logicalType: integer
+                  required: true
+                - name: num_cols
+                  logicalType: integer
+                  required: true
+                - name: table_cells
+                  logicalType: array
+                  required: true
+                  items:
+                    logicalType: object
+                    properties:
+                      - name: text
+                        logicalType: string
+                        required: true
+                      - name: start_row_offset_idx
+                        logicalType: integer
+                        required: true
+                      - name: start_col_offset_idx
+                        logicalType: integer
+                        required: true
+                      - name: row_span
+                        logicalType: integer
+                      - name: col_span
+                        logicalType: integer
+                      - name: column_header
+                        logicalType: boolean
+                      - name: row_header
+                        logicalType: boolean

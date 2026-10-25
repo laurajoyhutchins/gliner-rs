@@ -17,6 +17,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from prepare_corpus import make_chunks
+from jsonschema import Draft202012Validator
 
 
 def sha256(path: Path) -> str:
@@ -112,6 +113,9 @@ def run(argv=None):
     pages = parse_pages(args.pages)
     private = args.private_dir.resolve()
     private.mkdir(parents=True, exist_ok=True)
+    contracts = Path(__file__).resolve().parent / "contracts"
+    docling_schema = Draft202012Validator(json.loads((contracts / "docling-export.schema.json").read_text()))
+    corpus_schema = Draft202012Validator(json.loads((contracts / "docling-corpus.schema.json").read_text()))
     output_pages = private / "docling-pages"
     output_pages.mkdir(exist_ok=True)
     source_sha = sha256(args.pdf)
@@ -129,6 +133,7 @@ def run(argv=None):
         # A missing structured-layout model is a hard failure, never fallback.
         subprocess.run(command, check=True, timeout=180, stdout=subprocess.DEVNULL)
         document = json.loads(destination.read_text())
+        docling_schema.validate(document)
         blocks, table_count = extract_page(document, page)
         blocks_by_page[page] = blocks
         total_tables += table_count
@@ -146,6 +151,7 @@ def run(argv=None):
         "docling": {"source_revision": args.docling_revision, "binary_sha256": binary_sha,
                     "mode": args.mode, "page_receipts": page_receipts, "tables": total_tables}
     }
+    corpus_schema.validate(corpus)
     corpus_path = private / "corpus.json"
     corpus_path.write_text(json.dumps(corpus, indent=2, ensure_ascii=False) + "\n")
     safe = {

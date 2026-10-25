@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Regulatory electrical quantity candidate admission summary",
+  "type": "object",
+  "required": [
+    "audit_kind",
+    "counts",
+    "withheld_positions",
+    "raw_predictions_unchanged",
+    "independent_engineering_accuracy_assessed"
+  ],
+  "properties": {
+    "audit_kind": {
+      "const": "conservative_explicit_unit_presence_not_gold_accuracy"
+    },
+    "counts": {
+      "type": "object",
+      "required": [
+        "voltage rating",
+        "current rating"
+      ],
+      "properties": {
+        "voltage rating": {
+          "type": "object",
+          "required": [
+            "raw",
+            "admitted_unit_present",
+            "withheld_unit_missing"
+          ],
+          "properties": {
+            "raw": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "admitted_unit_present": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "withheld_unit_missing": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "current rating": {
+          "type": "object",
+          "required": [
+            "raw",
+            "admitted_unit_present",
+            "withheld_unit_missing"
+          ],
+          "properties": {
+            "raw": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "admitted_unit_present": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "withheld_unit_missing": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "withheld_positions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "case_id",
+          "page",
+          "label",
+          "start",
+          "end"
+        ],
+        "properties": {
+          "case_id": {
+            "type": "string"
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "label": {
+            "enum": [
+              "voltage rating",
+              "current rating"
+            ]
+          },
+          "start": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "end": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "raw_predictions_unchanged": {
+      "const": true
+    },
+    "independent_engineering_accuracy_assessed": {
+      "const": false
+    }
+  },
+  "additionalProperties": false
+}

@@ -111,6 +111,9 @@ def main() -> None:
     parser.add_argument("--require-exact", action="store_true")
     args = parser.parse_args()
     safe, detailed = audit_tables(args.pdf, args.tables)
+    from jsonschema import Draft202012Validator
+    schema_path = Path(__file__).with_name("contracts") / "table-text-audit.schema.json"
+    Draft202012Validator(json.loads(schema_path.read_text())).validate(safe)
     for path, data in ((args.private_out, detailed), (args.safe_out, safe)):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")

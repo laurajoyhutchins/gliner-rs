@@ -1,0 +1,99 @@
+[
+  {
+    "name": "en_ner",
+    "text": "Apple CEO Tim Cook announced iPhone 15 in Cupertino yesterday.",
+    "entities": [
+      "company",
+      "person",
+      "product",
+      "location"
+    ]
+  },
+  {
+    "name": "no_entities",
+    "text": "The weather today is mild and the meeting has been postponed.",
+    "entities": [
+      "person",
+      "company",
+      "location"
+    ]
+  },
+  {
+    "name": "repeated",
+    "text": "Mario Rossi called Mario Rossi's office, then Mario Rossi left.",
+    "entities": [
+      "person"
+    ]
+  },
+  {
+    "name": "unicode",
+    "text": "Dr. María José García-López emailed zoe@example.org from Zürich, Switzerland.",
+    "entities": [
+      "person",
+      "email",
+      "location"
+    ]
+  },
+  {
+    "name": "de_business",
+    "text": "Herr Andreas Müller arbeitet bei Siemens AG in München.",
+    "entities": [
+      "person",
+      "company",
+      "location"
+    ]
+  },
+  {
+    "name": "technical",
+    "text": "Panel LP-1 is rated 480/277 V, 3-phase, 4-wire with a 400 A main breaker. Its feeder originates at switchboard MSB-1 and serves lighting circuits in Building A.",
+    "entities": [
+      "electrical equipment",
+      "voltage rating",
+      "current rating",
+      "location"
+    ]
+  },
+  {
+    "name": "relation",
+    "text": "Microsoft was founded by Bill Gates and Paul Allen in Albuquerque. Satya Nadella became CEO of Microsoft.",
+    "entities": [
+      "person",
+      "company",
+      "location"
+    ],
+    "relations": [
+      "founded_by",
+      "ceo_of",
+      "located_in"
+    ]
+  },
+  {
+    "name": "classification",
+    "text": "Great camera quality, decent performance, but poor battery life.",
+    "classify": [
+      "sentiment=positive,negative,neutral"
+    ]
+  },
+  {
+    "name": "json_records",
+    "text": "Order #1234 for 3 laptops was shipped yesterday via FedEx. Order #5678 for a monitor is still pending.",
+    "json": [
+      "order=order_id::str,quantity::str,status::[shipped|pending|cancelled],carrier::str"
+    ]
+  },
+  {
+    "name": "mixed",
+    "text": "Apple CEO Tim Cook unveiled the iPhone 15 Pro for $999.",
+    "entities": [
+      "person",
+      "company",
+      "product"
+    ],
+    "relations": [
+      "works_for"
+    ],
+    "classify": [
+      "topic=technology,business,sports,politics"
+    ]
+  }
+]

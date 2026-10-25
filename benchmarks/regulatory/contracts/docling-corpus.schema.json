@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Private Docling-derived GLiNER regulatory corpus",
+  "type": "object",
+  "required": [
+    "format_version",
+    "source_sha256",
+    "extraction",
+    "pages",
+    "chunks",
+    "docling"
+  ],
+  "properties": {
+    "format_version": {
+      "const": 1
+    },
+    "source_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "extraction": {
+      "const": "docling_document_json"
+    },
+    "pages": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "integer",
+        "minimum": 1
+      }
+    },
+    "chunks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "page",
+          "text",
+          "sha256"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^p[0-9]+-c[0-9]+$"
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "docling": {
+      "type": "object",
+      "required": [
+        "source_revision",
+        "binary_sha256",
+        "mode",
+        "page_receipts",
+        "tables"
+      ],
+      "properties": {
+        "source_revision": {
+          "type": "string",
+          "minLength": 5
+        },
+        "binary_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "mode": {
+          "enum": [
+            "standard",
+            "text-layer"
+          ]
+        },
+        "tables": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "page_receipts": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": [
+              "page",
+              "docling_json_sha256",
+              "text_elements",
+              "tables",
+              "docling_schema_version"
+            ],
+            "properties": {
+              "page": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "docling_json_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "text_elements": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "tables": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "docling_schema_version": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

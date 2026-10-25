@@ -1,0 +1,46 @@
+apiVersion: v3.2.0
+kind: DataContract
+id: urn:datacontract:gliner-rs:docling-document-export
+name: DoclingDocument page-provenance extraction
+version: 1.0.0
+status: active
+description:
+  purpose: >-
+    Contract between Docling document conversion and GLiNER regulatory extraction.
+    Docling preserves the PDF's original 1-based page number and structured
+    table-cell coordinates. The companion JSON Schema validates the consumed
+    DoclingDocument projection before any model input is produced.
+  limitations: >-
+    Text-layer-only extraction cannot reconstruct layout tables. Standard
+    extraction requires independently installed Docling ONNX layout/OCR assets.
+    No GLiNER inference outcome is a legal or engineering compliance judgment.
+servers:
+  - server: private-local-files
+    type: local
+    description: Private JSON DoclingDocument export, never committed to GitHub
+schema:
+  - name: DoclingDocument
+    description: >-
+      DoclingDocument JSON. The authoritative machine-checkable interface is
+      contracts/docling-export.schema.json, Draft 2020-12. Only the referenced
+      fields are consumed; additional standard Docling fields are preserved.
+    properties:
+      - name: schema_name
+        logicalType: string
+        required: true
+        description: Must equal DoclingDocument
+      - name: version
+        logicalType: string
+        required: true
+      - name: pages
+        logicalType: object
+        required: true
+        description: Mapping of original physical PDF page numbers
+      - name: texts
+        logicalType: array
+        required: true
+        description: Text items with prov.page_no
+      - name: tables
+        logicalType: array
+        required: true
+        description: Table items containing page provenance and grid-indexed cells

@@ -7,9 +7,7 @@ use candle_nn::{embedding, layer_norm, linear, Embedding, LayerNorm, Linear, Var
 use crate::config::DebertaConfig;
 
 struct Layer {
-    query_proj: Linear,
-    key_proj: Linear,
-    value_proj: Linear,
+    qkv_proj: Linear,
     attn_dense: Linear,
     attn_norm: LayerNorm,
     intermediate: Linear,
@@ -52,6 +50,18 @@ fn log_bucket_position(rel: i64, bucket_size: i64, max_position: i64) -> i64 {
     (log_pos * rel.signum() as f32) as i64
 }
 
+/// Pack three independent projection matrices into one Linear without
+/// changing their learned weights. This runs once when a checkpoint loads.
+fn fuse_qkv(query: &Linear, key: &Linear, value: &Linear) -> Result<Linear> {
+    let weight = Tensor::cat(&[query.weight(), key.weight(), value.weight()], 0)?;
+    let bias = match (query.bias(), key.bias(), value.bias()) {
+        (Some(q), Some(k), Some(v)) => Some(Tensor::cat(&[q, k, v], 0)?),
+        (None, None, None) => None,
+        _ => return Err(candle_core::Error::Msg("mixed QKV projection bias configuration".into())),
+    };
+    Ok(Linear::new(weight, bias))
+}
+
 fn split_heads(x: &Tensor, num_heads: usize, head_dim: usize) -> Result<Tensor> {
     let (b, t, _) = x.dims3()?;
     x.reshape((b, t, num_heads, head_dim))?
@@ -83,10 +93,12 @@ impl DebertaV2 {
             // and don't depend on the input, so they're fixed once the weights load.
             let pos_q = split_heads(&query_proj.forward(&rel)?, num_heads, head_dim)?;
             let pos_k = split_heads(&key_proj.forward(&rel)?, num_heads, head_dim)?;
+            let value_proj = linear(h, h, l.pp("attention.self.value_proj"))?;
+            // Fuse three projections into one GEMM per encoder layer.
+            // Positional projections above still use the unmodified query/key
+            // weights and are cached at model load time.
             layers.push(Layer {
-                query_proj,
-                key_proj,
-                value_proj: linear(h, h, l.pp("attention.self.value_proj"))?,
+                qkv_proj: fuse_qkv(&query_proj, &key_proj, &value_proj)?,
                 attn_dense: linear(h, h, l.pp("attention.output.dense"))?,
                 attn_norm: layer_norm(h, eps, l.pp("attention.output.LayerNorm"))?,
                 intermediate: linear(h, cfg.intermediate_size, l.pp("intermediate.dense"))?,
@@ -158,9 +170,11 @@ impl DebertaV2 {
 
         let scale = ((self.head_dim * 3) as f64).sqrt();
         for layer in &self.layers {
-            let q = split_heads(&layer.query_proj.forward(&hidden)?, self.num_heads, self.head_dim)?;
-            let k = split_heads(&layer.key_proj.forward(&hidden)?, self.num_heads, self.head_dim)?;
-            let v = split_heads(&layer.value_proj.forward(&hidden)?, self.num_heads, self.head_dim)?;
+            let width = self.num_heads * self.head_dim;
+            let qkv = layer.qkv_proj.forward(&hidden)?;
+            let q = split_heads(&qkv.narrow(2, 0, width)?, self.num_heads, self.head_dim)?;
+            let k = split_heads(&qkv.narrow(2, width, width)?, self.num_heads, self.head_dim)?;
+            let v = split_heads(&qkv.narrow(2, 2 * width, width)?, self.num_heads, self.head_dim)?;
 
             let content = q.matmul(&k.t()?)?;
             let c2p = q
@@ -196,7 +210,40 @@ fn f16_min() -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::log_bucket_position;
+    use super::{fuse_qkv, log_bucket_position};
+    use candle_core::{Device, Module, Tensor};
+    use candle_nn::Linear;
+
+    #[test]
+    fn fused_projection_matches_independent_projections_for_batched_tokens() -> candle_core::Result<()> {
+        let dev = &Device::Cpu;
+        let x = Tensor::from_vec((0..56).map(|i| (i as f32 - 23.0) / 13.0).collect(), (2, 7, 4), dev)?;
+        for with_bias in [false, true] {
+            let mut individual = Vec::new();
+            for kind in 0..3 {
+                let weights: Vec<f32> = (0..20).map(|i| (i as f32 - kind as f32 * 3.0) / 27.0).collect();
+                let bias = if with_bias {
+                    Some(Tensor::from_vec((0..5).map(|i| (i as f32 + kind as f32) / 19.0).collect(), 5, dev)?)
+                } else { None };
+                individual.push(Linear::new(Tensor::from_vec(weights, (5, 4), dev)?, bias));
+            }
+            let fused = fuse_qkv(&individual[0], &individual[1], &individual[2])?;
+            let fused_result = fused.forward(&x)?;
+            for (part, proj) in individual.iter().enumerate() {
+                let expected = proj.forward(&x)?.to_vec3::<f32>()?;
+                let observed = fused_result.narrow(2, 5 * part, 5)?.to_vec3::<f32>()?;
+                for (e_batch, o_batch) in expected.iter().zip(observed.iter()) {
+                    for (e_row, o_row) in e_batch.iter().zip(o_batch.iter()) {
+                        for (&e, &o) in e_row.iter().zip(o_row.iter()) {
+                            assert!((e - o).abs() <= 1e-5, "projection part {part}: {e} != {o}");
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
 
     #[test]
     fn buckets_are_identity_near_zero() {

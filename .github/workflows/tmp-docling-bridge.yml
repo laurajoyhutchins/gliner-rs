@@ -1,0 +1,56 @@
+name: Temporary Docling CLI transport for private offline proof
+on:
+  push:
+    branches: [agent/docling-private-regulatory-e2e]
+    paths: ['.github/workflows/tmp-docling-bridge.yml']
+permissions:
+  contents: read
+jobs:
+  release-binary:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 12
+    steps:
+      - name: Fetch pinned upstream Docling release for offline baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 --silent --show-error \
+            -o docling-release.tar.gz \
+            https://github.com/docling-project/docling.rs/releases/download/v2.51.3/docling-rs-v2.51.3-x86_64-unknown-linux-gnu.tar.gz
+          tar -tzf docling-release.tar.gz | head -20
+          sha256sum docling-release.tar.gz > docling-release.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: docling-upstream-v2.51.3-linux-cli
+          path: |
+            docling-release.tar.gz
+            docling-release.sha256
+          retention-days: 1
+  fork-binary:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: laurajoyhutchins/docling.rs
+          ref: e91d7fe5e756aabae322bba10d48f4d8cfce8ce0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build owner's exact Docling revision
+        env:
+          CARGO_BUILD_JOBS: 4
+        run: cargo build --locked --release -p docling-cli
+      - name: Package binary and exact-revision provenance
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = e91d7fe5e756aabae322bba10d48f4d8cfce8ce0
+          tar -czf docling-owned-fork-cli.tar.gz -C target/release docling-rs
+          sha256sum docling-owned-fork-cli.tar.gz > docling-owned-fork-cli.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: docling-owner-exact-head-linux-cli
+          path: |
+            docling-owned-fork-cli.tar.gz
+            docling-owned-fork-cli.sha256
+          retention-days: 1

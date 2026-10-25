@@ -290,3 +290,41 @@ scored cell-by-cell. OCR token matching on one rasterized page is not OCR
 quality assurance across all layouts or editions. GLiNER regulatory
 accuracy still needs reviewed gold annotations. Do not claim that matching
 two implementations demonstrates NEC rule interpretation accuracy.
+
+### Exact-commit one-command end-to-end verification
+
+Using owner's Docling binary SHA-256
+`633ff50da0a3de30faa6e43521e0292cc224a15ec0ec4fbc5cdbc807820b6b5e`,
+the GLiNER Rust executable compiled from verification commit
+`9a09fc121cb647043f469d7dd5de16a8e2b0e885` (binary SHA-256
+`b6a47cae4143c4c0dfbb5c38a118b2b0262ae9c94ad65b2a3f5c855adee46f39`),
+and checkpoint SHA-256
+`4ee982787ace270d4bf15dbcb28ced38e0aa201372347114ceedd6336055de2b`:
+
+- Real private NEC 2017 PDF, physical pages 80 and 650, produced **3 tables
+  with 232 anchored cells** and 20 text chunks. The private canonical
+  table-evidence SHA-256 is
+  `6162429deff529e6813282fd35b4402c2d83a1992e10980e3bf901a751790115`.
+- Single `run_docling.py` invocation completed Docling conversion,
+  provenance validation, table serialization, and Python/Rust inference
+  comparison. **16/16 semantic and 16/16 full numerical matches** at 1e-4
+  tolerance, with two threads. A one-sample-per-case run summed **2891 ms
+  Rust** and **2061 ms Python**. A separate three-sample comparison also
+  matched 16/16; the timing samples are exploratory.
+- A generated *image-only* PDF from original NEC page 40 exercised real
+  Docling OCR and the same adapter. It produced 33 recognized text items
+  and 12 private chunks, without an embedded text layer. Against the
+  digital source, unordered token precision was about **98.5%** and
+  token recall **96.0%**. That is not an OCR layout or standards-accuracy
+  measure.
+- The three model-backed tables have no overlapping occupied grid cells.
+  The 26×9 table on page 650 has two empty top-left header positions,
+  retained as such, not invented.
+- **19 local contract tests passed.** Exact-revision source and checksum
+  evidence is local. The public repository contains no private source text,
+  OCR transcriptions, or generated table grids.
+
+This closes the executable structured-layout and OCR integration proof.
+Engineering rule interpretation, table-cell transcription accuracy at
+scale, and code-edition correctness remain separate independent-review
+work.

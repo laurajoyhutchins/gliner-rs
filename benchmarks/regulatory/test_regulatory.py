@@ -33,6 +33,15 @@ class RegulatoryBenchmarkTests(unittest.TestCase):
         self.assertEqual(len(selected), 8)
         self.assertEqual({3, 4, 5, 6}, {x["page"] for x in selected})
 
+    def test_sampler_returns_requested_count_from_two_long_pages(self):
+        chunks = [{"page": page, "id": f"{page}-{i}"}
+                  for page in (80, 650) for i in range(10)]
+        selected = select_chunks(chunks, 16)
+        self.assertEqual(len(selected), 16)
+        self.assertEqual(len({row["id"] for row in selected}), 16)
+        self.assertEqual(sum(row["page"] == 80 for row in selected), 8)
+        self.assertEqual(sum(row["page"] == 650 for row in selected), 8)
+
     def test_confidence_tolerance_and_semantic_differences(self):
         self.assertTrue(numerically_equal({"confidence": 0.500001}, {"confidence": 0.500002}))
         self.assertFalse(numerically_equal({"a": [1]}, {"a": [1, 2]}))

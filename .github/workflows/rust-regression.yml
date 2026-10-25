@@ -22,10 +22,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Syntax-check benchmark entry points
         run: python3 -m py_compile benchmarks/compare.py benchmarks/compare_rust_revisions.py
+      - name: Install JSON Schema validator for Docling contract boundary
+        run: python3 -m pip install --user jsonschema==4.26.0
       - name: Regulatory corpus and reviewed-gold contract tests
         run: python3 -m unittest discover -s benchmarks/regulatory -p 'test_*.py' -v
       - name: Syntax-check real-document benchmarks
         run: python3 -m py_compile benchmarks/regulatory/*.py
+
       - name: Offline-independent library regression tests
         run: cargo test --locked --release --lib
       - name: Verify opt-in batch benchmark compiles

@@ -88,6 +88,7 @@ def main():
     src = parser.add_mutually_exclusive_group(required=True)
     src.add_argument("--pdf", type=Path)
     src.add_argument("--docling-json", type=Path)
+    parser.add_argument("--source-pdf", type=Path, help="required source PDF for Docling JSON provenance")
     parser.add_argument("--pages", required=True, help="1-based PDF physical page numbers, comma separated")
     parser.add_argument("--max-chars", type=int, default=550)
     parser.add_argument("--out", required=True, type=Path)
@@ -98,6 +99,10 @@ def main():
     if not selected or min(selected) < 1:
         parser.error("page numbers must be >= 1")
     source = args.pdf or args.docling_json
+    if args.docling_json and not args.source_pdf:
+        parser.error("--docling-json requires --source-pdf; Docling JSON is not the source PDF")
+    if args.pdf and args.source_pdf:
+        parser.error("--source-pdf belongs only with --docling-json")
     if args.docling_json:
         pages = docling_pages(json.loads(source.read_text()))
         kind = "docling_document_json"
@@ -107,7 +112,7 @@ def main():
     chunks = make_chunks(pages, selected, args.max_chars)
     if not chunks:
         raise RuntimeError("No page text extracted")
-    record = {"format_version": 1, "source_sha256": digest(source.read_bytes()),
+    record = {"format_version": 1, "source_sha256": digest((args.source_pdf or source).read_bytes()),
               "extraction": kind, "pages": sorted(selected), "chunks": chunks}
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n")

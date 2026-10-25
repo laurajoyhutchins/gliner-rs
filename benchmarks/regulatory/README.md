@@ -146,3 +146,99 @@ do not introduce an ONNX runtime or another production backend solely based
 on these early results. Next gate: use actual Docling JSON and labeled
 regulatory excerpts, then profile encoder GEMM before considering backend
 migration.
+
+## Direct Docling conversion and GLiNER benchmark
+
+The new **run_docling.py** runner executes a pinned docling.rs CLI against the
+original private PDF, one selected physical page per conversion. It verifies
+that DoclingDocument JSON retained the original physical \`page_no\`, validates
+the cross-repository JSON Schema, converts both text blocks and indexed table
+rows into GLiNER inputs, validates the resulting corpus schema, and invokes
+the existing Rust-versus-Python benchmark. It emits a separate source-safe
+receipt. **No private pages, raw predictions or tables are published.**
+
+Run from the GLiNER repository root, where the isolated Docling executable
+and the model already exist:
+
+\`\`\`sh
+python3 -m pip install 'jsonschema==4.26.0'
+python3 benchmarks/regulatory/run_docling.py \
+  --pdf /secure/nec-2017.pdf \
+  --docling-bin /secure/docling-rs \
+  --docling-revision e91d7fe5e756aabae322bba10d48f4d8cfce8ce0 \
+  --mode text-layer \
+  --pages 40,80,100,230,350,450,550,650 \
+  --private-dir benchmarks/regulatory/private-codebook/nec2017 \
+  --rust-binary target/release/gliner \
+  --model-dir /secure/gliner2.5-small-v1 \
+  --python-source /secure/GLiNER2 \
+  --checkpoint-sha256 4ee982787ace270d4bf15dbcb28ced38e0aa201372347114ceedd6336055de2b \
+  --rounds 4 --threads 2
+\`\`\`
+
+**Do not use the user's fork commit argument with an upstream release binary.**
+Pass its true release tag or actual source revision, and verify the binary
+SHA in the safe receipt. Source provenance must be truthful.
+
+\`--mode standard\` (the default) invokes Docling's **real structured PDF
+layout and table pipeline**, with no silent text-only fallback. Install the
+matching Docling ONNX layout, TableFormer and OCR model files through the
+Docling fork's \`scripts/install/download_dependencies.sh\`. For a digital
+text-bearing NEC PDF, \`--mode text-layer\` is substantially lighter, but
+it **does not recognize tables as structured grid cells**. Any tables emitted
+by the standard path are handled as provenance-bearing grid rows; malformed
+tables cause the entire conversion to fail. Captions, bounding boxes and
+schema versions remain available in the private per-page Docling JSON.
+
+The JSON boundary is specified by both:
+\`contracts/docling-export.schema.json\` (JSON Schema 2020-12) and
+\`contracts/docling-export.odcs.yaml\` (ODCS 3.2).
+The locally generated corpus is validated against
+\`contracts/docling-corpus.schema.json\`. This preserves the repository's
+contract rule without making GLiNER dependent on Docling's Rust runtime.
+
+**Verified on the private 2017 NEC PDF (October 25, 2026)** using the
+upstream docling.rs v2.51.3 release CLI, not yet the owner-built fork binary:
+8 original physical pages, 84 text-layer chunks, source SHA
+\`603ef5c461247bacd716e3953222bfb227f1ddc780fffdbfcb90756b02c237c7\`.
+On 16 sampled chunks, Rust/Python extraction agreed semantically and
+numerically in **16/16** cases (1e-4 tolerance). Rust summed warm per-chunk
+median latency **2403ms** versus Python/PyTorch **1772ms** (two timing samples
+per chunk). This is implementation parity, not independently validated NEC
+accuracy. Source passages stay only in the local private directory.
+
+The older \`prepare_corpus.py --docling-json\` path now also requires
+\`--source-pdf\` so that its \`source_sha256\` identifies the original code
+book, not a transient JSON conversion artifact.
+
+### Owner-built Docling confirmation
+
+The owner's fork, \`laurajoyhutchins/docling.rs\`, was compiled on
+Ubuntu 24.04 from exact commit
+\`e91d7fe5e756aabae322bba10d48f4d8cfce8ce0\`, yielding
+Docling CLI \`2.51.0\`, binary SHA-256
+\`633ff50da0a3de30faa6e43521e0292cc224a15ec0ec4fbc5cdbc807820b6b5e\`.
+Ubuntu 22.04 was incompatible with bundled ONNX Runtime C++ symbols.
+
+The owner's binary reproduced **all 84 identical text-chunk SHA-256 values**
+on the same eight 2017 NEC physical pages compared with the upstream
+Docling v2.51.3 release. Running those chunks through both inference
+engines yielded **16/16 semantic and 16/16 numerical matches** within
+\`1e-4\`; the sum of per-case median timings from two samples was
+Rust/Candle **2415 ms** and Python/PyTorch **2056 ms**. This is
+end-to-end **text-layer** conversion, not ML layout or table accuracy
+verification.
+
+For future isolated builds, use the on-demand
+\`.github/workflows/docling-cli-transport.yml\` workflow with an exact
+40-character Docling fork commit SHA. It archives the compiled CLI with
+both binary and archive checksums, a source-revision manifest, and
+one-day artifact retention. It does not ship PDFs or extracted text.
+The usual pull-request CI never rebuilds Docling.
+
+**Structured-layout verification boundary:** \`--mode standard\` is wired
+through to the native Docling model pipeline but requires its separately
+licensed ONNX layout/TableFormer assets. That mode failed closed with
+\`layout_heron.onnx\` missing on the offline VM. No table-recognition or
+OCR claim is made until those assets are present and tested on pages
+with reviewed tables. It is not equivalent to the text-layer proof.

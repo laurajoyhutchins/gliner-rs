@@ -328,3 +328,55 @@ This closes the executable structured-layout and OCR integration proof.
 Engineering rule interpretation, table-cell transcription accuracy at
 scale, and code-edition correctness remain separate independent-review
 work.
+
+## Independent PDF text-layer check and quantity admission (2026-10-25)
+
+The **real 2017 NEC**, physical pages 80 and 650, were checked using
+PyMuPDF's own embedded PDF word extraction and the Docling cell bounding
+boxes. This is independent *software transcription evidence*, not review
+against an externally authored table or a human-reviewed compliance label.
+
+| Metric | Result |
+| --- | ---: |
+| Docling anchored table cells | 232 |
+| Exact after typography/whitespace normalization | **230** |
+| Unresolved cell-coordinate/text differences | **2** |
+| Page 80 exact matches | **26/26** |
+
+The two unresolved positions are on PDF page **650**, `#/tables/0`,
+rows 2 and 3, column 0. The PDF text layer assigns overlapping words
+across those adjacent cell bounding boxes. These remain **needs_review**;
+they have not been silently counted as correctly transcribed.
+
+Run source-bound, private-only diagnostics:
+
+```sh
+python3 -m pip install 'PyMuPDF==1.26.7'
+python3 benchmarks/regulatory/audit_tables.py \
+  --pdf /secure/nec-2017.pdf \
+  --tables benchmarks/regulatory/private-codebook/nec2017-layout/docling-tables.json \
+  --private-out benchmarks/regulatory/private-codebook/nec2017-layout/table-audit-private.json \
+  --safe-out benchmarks/regulatory/private-codebook/nec2017-layout/table-audit-safe.json
+```
+
+The `--require-exact` flag exits nonzero if any unresolved differences remain.
+The standard `run_docling.py --audit-pdf-text` option also includes the
+source-safe audit result in its private receipt. The detailed comparison
+contains licensed source snippets and must never be published.
+
+**Shared-model semantic failure found:** On all 20 privately generated
+structured-Docling chunks, the Python GLiNER2.5 reference predicted four
+`voltage rating` candidates and one `current rating` candidate. All
+**five** were actually unitless NEC section numbers, not electrical
+quantities. The `audit_quantities.py` function conservatively marks these
+candidates as unadmitted when their own extracted span contains no explicit
+V/kV or A/kA units. The benchmark reports raw and withheld counts separately
+for Rust and Python without changing model outputs. A unit-bearing candidate
+is **not automatically an independently validated engineering quantity**:
+this check prevents a demonstrated false-positive class, but cannot establish
+precision/recall, UCUM compliance, code applicability or complete extraction.
+
+**Next independent review:** Adjudicate the two overlapping table cells
+against a human-reviewed source rendering and create complete reference spans
+for a bounded code-section/quantity label corpus. Until then, extracted
+regulatory requirements are not trusted engineering decisions.

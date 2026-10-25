@@ -260,6 +260,12 @@ def main():
     # model outputs and their Python/Rust parity remain untouched.
     report["quantity_admission_rust"] = audit_quantity_candidates(cases, rust)
     report["quantity_admission_python"] = audit_quantity_candidates(cases, python)
+    from jsonschema import Draft202012Validator
+    admission_schema = json.loads((Path(__file__).with_name("contracts")
+                                   / "quantity-admission.schema.json").read_text())
+    validator = Draft202012Validator(admission_schema)
+    validator.validate(report["quantity_admission_rust"])
+    validator.validate(report["quantity_admission_python"])
     if args.gold_json:
         gold = json.loads(args.gold_json.read_text())
         if gold.get("format_version") != 1 or gold.get("source_sha256") != corpus["source_sha256"]:

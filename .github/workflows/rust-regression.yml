@@ -20,5 +20,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Syntax-check benchmark entry points
+        run: python3 -m py_compile benchmarks/compare.py benchmarks/compare_rust_revisions.py
       - name: Offline-independent library regression tests
         run: cargo test --locked --release --lib

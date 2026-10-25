@@ -1,3 +1,6 @@
 target/
 jev-answers
 examples/dino/game/
+
+# Private, potentially licensed building-code extracts and review annotations.
+benchmarks/regulatory/private-codebook/

@@ -197,6 +197,7 @@ def run(argv=None):
     ap.add_argument("--checkpoint-sha256")
     ap.add_argument("--threads", type=int, default=2)
     ap.add_argument("--rounds", type=int, default=4)
+    ap.add_argument("--audit-pdf-text", action="store_true", help="cross-check table cells against PDF embedded text layer; requires PyMuPDF")
     args = ap.parse_args(argv)
     if args.max_chars < 100:
         ap.error("--max-chars must be >= 100")
@@ -269,6 +270,16 @@ def run(argv=None):
         "tables_sha256": table_sha,
         "accuracy": "unassessed_without_independent_gold_labels"
     }
+    if args.audit_pdf_text:
+        from audit_tables import audit_tables
+        # Raw compared text is private, safe receipts contain coordinates only.
+        text_audit, private_details = audit_tables(args.pdf, table_path)
+        (private / "table-text-audit-private.json").write_text(
+            json.dumps(private_details, indent=2, ensure_ascii=False) + "\n")
+        (private / "table-text-audit-safe.json").write_text(
+            json.dumps(text_audit, indent=2) + "\n")
+        safe["table_text_audit"] = text_audit
+        # This is explicitly not an independent human-reviewed gold evaluation.
     if args.rust_binary or args.model_dir:
         if not all((args.rust_binary, args.model_dir, args.checkpoint_sha256)):
             ap.error("inference requires --rust-binary, --model-dir, --checkpoint-sha256")

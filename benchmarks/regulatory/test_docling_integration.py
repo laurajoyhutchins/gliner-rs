@@ -98,6 +98,24 @@ class DoclingBridgeTests(unittest.TestCase):
         self.assertEqual(blocks[1], "Table 1: device ratings")
         self.assertTrue(blocks[2].startswith("Table #/tables/0 row 0:"))
 
+    def test_structured_cells_retain_spans_and_header_roles(self):
+        first = self.document["tables"][0]["data"]["table_cells"][0]
+        first["row_span"] = 2
+        first["column_header"] = True
+        saved = []
+        extract_page(self.document, 40, tables_out=saved)
+        self.assertEqual(saved[0]["cells"][0]["row_span"], 2)
+        self.assertTrue(saved[0]["cells"][0]["column_header"])
+        schema = Draft202012Validator(json.loads(
+            (CONTRACTS / "docling-tables.schema.json").read_text()))
+        schema.validate({"format_version": 1, "source_sha256": "e" * 64, "tables": saved})
+
+    def test_invalid_duplicate_table_cell_anchor_rejected(self):
+        cells = self.document["tables"][0]["data"]["table_cells"]
+        cells.append(dict(cells[0]))
+        with self.assertRaisesRegex(ValueError, "duplicate"):
+            extract_page(self.document, 40)
+
     def test_specified_page_ranges_are_validated(self):
         self.assertEqual(parse_pages("40,80-82,40"), [40, 80, 81, 82])
         for invalid in ["0", "10-5", "a", "1, ", "999-2001"]:
@@ -125,7 +143,7 @@ class DoclingBridgeTests(unittest.TestCase):
                         "binary_sha256": h1, "mode": "standard", "tables": 1,
                         "table_cells": 4, "tables_sha256": h0,
                         "page_receipts": [{"page": 40, "docling_json_sha256": h0,
-                                           "text_elements": 1, "tables": 1,
+                                           "text_elements": 1, "tables": 1, "table_cells": 4,
                                            "docling_schema_version": "1.10.0"}]}
         }
         validator = Draft202012Validator(json.loads(

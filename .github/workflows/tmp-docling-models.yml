@@ -1,0 +1,54 @@
+name: Temporary verified Docling ONNX asset transport
+on:
+  push:
+    branches: [agent/docling-structured-layout-verification]
+    paths: ['.github/workflows/tmp-docling-models.yml']
+permissions:
+  contents: read
+jobs:
+  assets:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - part: layout-ocr
+            files: "layout_heron.onnx ocr_rec.onnx ppocr_keys_v1.txt ocr_rec_en.onnx en_dict.txt ocr_det.onnx ocr_rec_v6.onnx ocr_rec_v6_dict.txt"
+          - part: tableformer
+            files: "encoder.onnx decoder.onnx decoder.onnx.data bbox.onnx bbox.onnx.data"
+    steps:
+      - name: Download signed-manifest verified upstream model assets
+        shell: bash
+        env:
+          FILES: ${{ matrix.files }}
+          PART: ${{ matrix.part }}
+        run: |
+          set -euo pipefail
+          BASE='https://github.com/docling-project/docling.rs/releases/download/models-v1'
+          curl --fail --location --retry 8 --retry-all-errors --connect-timeout 30 --silent --show-error \
+            "$BASE/SHA256SUMS" -o SHA256SUMS
+          mkdir -p ".models/tableformer"
+          while read -r name; do
+            [[ -n "$name" ]] || continue
+            target=".models/$name"
+            if [[ "$PART" == tableformer ]]; then target=".models/tableformer/$name"; fi
+            curl --fail --location --retry 8 --retry-all-errors --connect-timeout 30 --silent --show-error \
+              "$BASE/$name" -o "$target"
+            expected="$(awk -v n="$name" '$2 == n {print $1; exit}' SHA256SUMS)"
+            [[ -n "$expected" ]] || { echo "Unlisted asset: $name"; exit 1; }
+            observed="$(sha256sum "$target" | cut -d' ' -f1)"
+            [[ "$expected" == "$observed" ]] || { echo "SHA mismatch: $name"; exit 1; }
+            echo "$expected  $name" >> "verified-$PART.txt"
+          done < <(printf '%s\n' $FILES)
+          tar -czf "docling-models-$PART.tar.gz" .models
+          sha256sum "docling-models-$PART.tar.gz" > "archive-$PART.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: docling-verified-${{ matrix.part }}
+          path: |
+            docling-models-${{ matrix.part }}.tar.gz
+            archive-${{ matrix.part }}.sha256
+            verified-${{ matrix.part }}.txt
+          if-no-files-found: error
+          retention-days: 1

@@ -1,0 +1,75 @@
+name: Pinned Python-Rust GLiNER2.5 parity benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      rounds:
+        description: Warm timed iterations per workload
+        required: true
+        default: '8'
+      threads:
+        description: CPU threads for both implementations
+        required: true
+        default: '2'
+
+permissions:
+  contents: read
+
+jobs:
+  reference-parity:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout immutable upstream reference
+        uses: actions/checkout@v4
+        with:
+          repository: fastino-ai/GLiNER2
+          ref: b86d35c02f2c1a4d9840ea50197bd1b6d13b031e
+          path: upstream
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Build exact Rust candidate
+        run: cargo build --release --locked --bin gliner
+      - name: Install reference Python stack
+        run: |
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch==2.10.0
+          python -m pip install -e ./upstream
+          python -m pip install transformers==5.8.0 huggingface_hub==1.33.0
+      - name: Download immutable checkpoint snapshot and verify weights
+        run: |
+          python - <<'PY'
+          from huggingface_hub import snapshot_download
+          snapshot_download(
+              repo_id='fastino/gliner2.5-small-v1',
+              revision='df5910e44bc4ffdb0d95399a83b0ca4516349aa5',
+              local_dir='checkpoint',
+              allow_patterns=['*.json', '*.safetensors'],
+          )
+          PY
+          printf '%s  %s\n' '4ee982787ace270d4bf15dbcb28ced38e0aa201372347114ceedd6336055de2b' checkpoint/model.safetensors | sha256sum --check
+      - name: Run semantic parity and warm CPU timing
+        env:
+          PYTHONUNBUFFERED: '1'
+        run: |
+          python benchmarks/compare.py \
+            --rust-bin target/release/gliner \
+            --model-dir checkpoint \
+            --python-source upstream \
+            --checkpoint-sha256 4ee982787ace270d4bf15dbcb28ced38e0aa201372347114ceedd6336055de2b \
+            --rounds "${{ inputs.rounds }}" --threads "${{ inputs.threads }}" \
+            --warmups 2 --out gliner-parity-benchmark.json
+      - name: Upload independently generated evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gliner-rs-pinned-reference-parity
+          path: |
+            gliner-parity-benchmark.json
+            gliner-parity-benchmark.rust.log
+          if-no-files-found: warn
+          retention-days: 7

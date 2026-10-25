@@ -69,7 +69,9 @@
         "binary_sha256",
         "mode",
         "page_receipts",
-        "tables"
+        "tables",
+        "table_cells",
+        "tables_sha256"
       ],
       "properties": {
         "source_revision": {
@@ -100,7 +102,8 @@
               "docling_json_sha256",
               "text_elements",
               "tables",
-              "docling_schema_version"
+              "docling_schema_version",
+              "table_cells"
             ],
             "properties": {
               "page": {
@@ -122,10 +125,22 @@
               "docling_schema_version": {
                 "type": "string",
                 "minLength": 1
+              },
+              "table_cells": {
+                "type": "integer",
+                "minimum": 0
               }
             },
             "additionalProperties": false
           }
+        },
+        "table_cells": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tables_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
         }
       },
       "additionalProperties": false

@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Private Docling Table Grid Evidence",
+  "type": "object",
+  "required": [
+    "format_version",
+    "source_sha256",
+    "tables"
+  ],
+  "properties": {
+    "format_version": {
+      "const": 1
+    },
+    "source_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "tables": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "page",
+          "self_ref",
+          "num_rows",
+          "num_cols",
+          "bbox",
+          "cells"
+        ],
+        "properties": {
+          "page": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "self_ref": {
+            "type": "string",
+            "pattern": "^#/tables/[0-9]+$"
+          },
+          "num_rows": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "num_cols": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "bbox": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "cells": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": [
+                "row",
+                "column",
+                "row_span",
+                "column_span",
+                "text",
+                "column_header",
+                "row_header",
+                "bbox"
+              ],
+              "properties": {
+                "row": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "column": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "row_span": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "column_span": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "text": {
+                  "type": "string"
+                },
+                "column_header": {
+                  "type": "boolean"
+                },
+                "row_header": {
+                  "type": "boolean"
+                },
+                "bbox": {
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

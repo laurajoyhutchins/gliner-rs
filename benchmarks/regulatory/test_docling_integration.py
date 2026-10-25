@@ -23,7 +23,7 @@ class DoclingBridgeTests(unittest.TestCase):
             "tables": [{
                 "self_ref": "#/tables/0",
                 "prov": [{"page_no": 40}],
-                "data": {"table_cells": [
+                "data": {"num_rows": 2, "num_cols": 2, "table_cells": [
                     {"text": "Voltage", "start_row_offset_idx": 0, "start_col_offset_idx": 0},
                     {"text": "Current", "start_row_offset_idx": 0, "start_col_offset_idx": 1},
                     {"text": "480 V", "start_row_offset_idx": 1, "start_col_offset_idx": 0},
@@ -33,9 +33,18 @@ class DoclingBridgeTests(unittest.TestCase):
         }
 
     def test_original_page_and_structured_table_rows_preserved(self):
-        blocks, tables = extract_page(self.document, 40)
+        structured = []
+        blocks, tables = extract_page(self.document, 40, tables_out=structured)
         self.assertEqual(tables, 1)
-        self.assertEqual(blocks, ["A test equipment label", "Voltage | Current", "480 V | 20 A"])
+        self.assertEqual(blocks, [
+            "A test equipment label",
+            "Table #/tables/0 row 0: column 0: Voltage | column 1: Current",
+            "Table #/tables/0 row 1: column 0: 480 V | column 1: 20 A"
+        ])
+        self.assertEqual(structured[0]["num_rows"], 2)
+        self.assertEqual(structured[0]["num_cols"], 2)
+        self.assertEqual(structured[0]["cells"][0]["row_span"], 1)
+        self.assertEqual(len(structured[0]["cells"]), 4)
         chunks = make_chunks({40: blocks}, {40}, 120)
         self.assertTrue(chunks)
         self.assertTrue(all(chunk["page"] == 40 for chunk in chunks))
@@ -46,7 +55,11 @@ class DoclingBridgeTests(unittest.TestCase):
         self.document["body"]["children"] = [{"$ref": "#/groups/0"}]
         blocks, count = extract_page(self.document, 40)
         self.assertEqual(count, 1)
-        self.assertEqual(blocks, ["Voltage | Current", "480 V | 20 A", "A test equipment label"])
+        self.assertEqual(blocks, [
+            "Table #/tables/0 row 0: column 0: Voltage | column 1: Current",
+            "Table #/tables/0 row 1: column 0: 480 V | column 1: 20 A",
+            "A test equipment label"
+        ])
 
     def test_invalid_provenance_is_not_silently_relabelled(self):
         with self.assertRaises(ValueError):
@@ -58,6 +71,49 @@ class DoclingBridgeTests(unittest.TestCase):
     def test_table_missing_structural_grid_is_rejected(self):
         self.document["tables"][0]["data"] = {}
         with self.assertRaises(ValueError):
+            extract_page(self.document, 40)
+
+    def test_rejects_misaligned_cell_spans(self):
+        self.document["tables"][0]["data"]["table_cells"][0]["row_span"] = 10
+        with self.assertRaises(ValueError):
+            extract_page(self.document, 40)
+
+    def test_skips_furniture_without_losing_page_provenance(self):
+        self.document["texts"].append({
+            "self_ref": "#/texts/1", "text": "Page footer",
+            "content_layer": "furniture", "prov": [{"page_no": 40}]
+        })
+        self.document["body"]["children"].append({"$ref": "#/texts/1"})
+        blocks, _ = extract_page(self.document, 40)
+        self.assertNotIn("Page footer", blocks)
+
+    def test_docling_table_caption_precedes_rows(self):
+        self.document["texts"].append({
+            "self_ref": "#/texts/1", "text": "Table 1: device ratings",
+            "content_layer": "body", "prov": [{"page_no": 40}]
+        })
+        self.document["tables"][0]["captions"] = [{"$ref": "#/texts/1"}]
+        self.document["tables"][0]["children"] = [{"$ref": "#/texts/1"}]
+        blocks, _ = extract_page(self.document, 40)
+        self.assertEqual(blocks[1], "Table 1: device ratings")
+        self.assertTrue(blocks[2].startswith("Table #/tables/0 row 0:"))
+
+    def test_structured_cells_retain_spans_and_header_roles(self):
+        first = self.document["tables"][0]["data"]["table_cells"][0]
+        first["row_span"] = 2
+        first["column_header"] = True
+        saved = []
+        extract_page(self.document, 40, tables_out=saved)
+        self.assertEqual(saved[0]["cells"][0]["row_span"], 2)
+        self.assertTrue(saved[0]["cells"][0]["column_header"])
+        schema = Draft202012Validator(json.loads(
+            (CONTRACTS / "docling-tables.schema.json").read_text()))
+        schema.validate({"format_version": 1, "source_sha256": "e" * 64, "tables": saved})
+
+    def test_invalid_duplicate_table_cell_anchor_rejected(self):
+        cells = self.document["tables"][0]["data"]["table_cells"]
+        cells.append(dict(cells[0]))
+        with self.assertRaisesRegex(ValueError, "duplicate"):
             extract_page(self.document, 40)
 
     def test_specified_page_ranges_are_validated(self):
@@ -85,8 +141,9 @@ class DoclingBridgeTests(unittest.TestCase):
                         "sha256": h1}],
             "docling": {"source_revision": "abcdef",
                         "binary_sha256": h1, "mode": "standard", "tables": 1,
+                        "table_cells": 4, "tables_sha256": h0,
                         "page_receipts": [{"page": 40, "docling_json_sha256": h0,
-                                           "text_elements": 1, "tables": 1,
+                                           "text_elements": 1, "tables": 1, "table_cells": 4,
                                            "docling_schema_version": "1.10.0"}]}
         }
         validator = Draft202012Validator(json.loads(

@@ -30,18 +30,35 @@ LABELS = ["electrical equipment", "voltage rating", "current rating",
 
 
 def select_chunks(chunks, limit):
+    """Sample across source pages without an artificial three-per-page ceiling.
+
+    Breadth-first midpoint traversal covers the beginning, middle and end of
+    each page's chunk sequence. Interleave page strata until the requested
+    count or all available chunks are exhausted.
+    """
     by_page = {}
     for item in chunks:
         by_page.setdefault(item["page"], []).append(item)
+    ordered = []
+    for _, items in sorted(by_page.items()):
+        pending = [(0, len(items) - 1)]
+        page_order = []
+        while pending:
+            lo, hi = pending.pop(0)
+            if lo > hi:
+                continue
+            mid = (lo + hi) // 2
+            page_order.append(items[mid])
+            pending.append((lo, mid - 1))
+            pending.append((mid + 1, hi))
+        ordered.append(page_order)
     selected = []
-    # Interleave all source pages, avoiding first-page bias.
-    for fraction in (0.0, 0.5, 1.0):
-        for _, items in sorted(by_page.items()):
-            candidate = items[round((len(items) - 1) * fraction)]
-            if candidate not in selected:
-                selected.append(candidate)
-            if len(selected) >= limit:
-                return selected
+    for depth in range(max((len(items) for items in ordered), default=0)):
+        for items in ordered:
+            if depth < len(items):
+                selected.append(items[depth])
+                if len(selected) >= limit:
+                    return selected
     return selected
 
 

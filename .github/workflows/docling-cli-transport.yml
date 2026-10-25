@@ -1,0 +1,56 @@
+name: Transport pinned owner Docling CLI
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_revision:
+        description: Exact 40-hex commit SHA in laurajoyhutchins/docling.rs
+        required: true
+        default: e91d7fe5e756aabae322bba10d48f4d8cfce8ce0
+
+permissions:
+  contents: read
+
+jobs:
+  compile-owner-docling:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      EXPECTED_SHA: ${{ inputs.source_revision }}
+      CARGO_BUILD_JOBS: '4'
+    steps:
+      - name: Reject mutable branches and malformed source revisions
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA" =~ ^[a-f0-9]{40}$ ]]
+      - uses: actions/checkout@v4
+        with:
+          repository: laurajoyhutchins/docling.rs
+          ref: ${{ inputs.source_revision }}
+          persist-credentials: false
+      - name: Verify exact source checkout
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build exact Docling CLI
+        run: cargo build --locked --release -p docling-cli
+      - name: Record identity and prepare transport
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'owner_repo=laurajoyhutchins/docling.rs\nrevision=%s\n' "$EXPECTED_SHA" > docling-build-provenance.txt
+          sha256sum target/release/docling-rs > docling-binary.sha256
+          tar -czf docling-owner-cli.tar.gz -C target/release docling-rs
+          sha256sum docling-owner-cli.tar.gz > docling-owner-cli.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: owner-docling-exact-revision-cli
+          path: |
+            docling-owner-cli.tar.gz
+            docling-owner-cli.sha256
+            docling-binary.sha256
+            docling-build-provenance.txt
+          if-no-files-found: error
+          retention-days: 1

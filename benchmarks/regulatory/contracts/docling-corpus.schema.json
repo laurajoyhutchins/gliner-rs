@@ -69,7 +69,9 @@
         "binary_sha256",
         "mode",
         "page_receipts",
-        "tables"
+        "tables",
+        "table_cells",
+        "tables_sha256"
       ],
       "properties": {
         "source_revision": {
@@ -126,6 +128,14 @@
             },
             "additionalProperties": false
           }
+        },
+        "table_cells": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tables_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
         }
       },
       "additionalProperties": false

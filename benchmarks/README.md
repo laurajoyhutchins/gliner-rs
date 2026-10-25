@@ -102,3 +102,51 @@ benchmark evidence.
 Keep `cargo test --release --locked --lib` and the Python parity harness
 as correctness checks. Do not use a timing threshold as a mandatory CI gate
 on shared runners.
+
+## Length-bucketed inference (no retraining)
+
+The boundary architecture offers an **opt-in** `GLiNER2::extract_batch_bucketed`
+method for document batches whose encoded token lengths vary substantially.
+It sorts inputs by prepared token count, groups at most 8 similarly sized
+documents, requires no more than 25% length spread, and caps
+`batch_size * max_tokens^2` at 1,000,000 for multi-input groups. Extraction
+results return in the caller's original order. Other model architectures
+retain their existing batch path.
+
+This avoids padding every document to the longest sequence, which wastes
+bidirectional attention computation and intermediate memory. The weights,
+tokenizer, decoder and public output format do not change. This is not
+an autoregressive KV-cache change or a retrained sparse-attention model.
+
+**Reproduce against a pinned checkpoint** (with the same SHA-256 validation
+used by `compare.py` before executing model inference):
+
+```sh
+cargo test --release --locked --lib
+RAYON_NUM_THREADS=2 OMP_NUM_THREADS=2 \
+  cargo run --release --locked --example bench_bucketed -- /path/to/gliner2.5-small-v1
+```
+
+On October 25, 2026, the ChatGPT Debian 13 CPU VM (5 vCPUs,
+2 inference threads, GLiNER2.5-small FP32 weights with SHA-256
+`4ee982787ace270d4bf15dbcb28ced38e0aa201372347114ceedd6336055de2b`)
+measured a 16-document mixed-length electrical-text example over five
+alternating A/B passes:
+
+| Run | Existing batch | Length-bucketed | Speedup |
+|---|---:|---:|---:|
+| Initial | 3029.9 ms | 1221.5 ms | 2.48× |
+| Clean fused-encoder reproduction | 3089.9 ms | 1172.2 ms | 2.64× |
+
+All five output comparisons in each run matched **exactly** including
+confidence fields and offsets. These are end-to-end batch-throughput timings
+excluding checkpoint loading, not single-document latencies. Smaller,
+uniform-length batches may benefit little or not at all; hardware, model,
+and batch composition can materially change the outcome.
+
+Other no-retraining experiments were explicitly rejected: the bounded
+relative-position cache plus unpadded fast path measured **0.96×** the
+reference speed (4% regression) on ten short cases; a flattened CPU linear
+projection rewrite produced noisy, inconsistent results. Neither is part of
+this optimization. Specialized GEMM kernels or quantization require
+separate per-hardware benchmarking and conformance checks.

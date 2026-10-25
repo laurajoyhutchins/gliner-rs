@@ -57,3 +57,48 @@ The microbenchmark prints microseconds per call. It does **not** establish
 end-to-end speedup, which must be measured separately through `compare.py`.
 A non-ignored property test checks 1,000 generated candidate sets including
 invalid candidates, ties and masking sentinels for exactly equal selection.
+
+## End-to-end Rust optimization comparison
+
+`compare_rust_revisions.py` checks that two compiled Rust engines produce
+the same complete inference outputs, while measuring warm end-to-end HTTP
+latency and peak resident memory. It alternates baseline/candidate process
+order to reduce systematic drift from host load. It rejects a mismatching
+model-weight SHA before either inference process starts.
+
+```sh
+python benchmarks/compare_rust_revisions.py \
+  --baseline /path/to/untouched/gliner \
+  --candidate target/release/gliner \
+  --model-dir /path/to/gliner2.5-small-v1 \
+  --checkpoint-sha256 4ee982787ace270d4bf15dbcb28ced38e0aa201372347114ceedd6336055de2b \
+  --threads 2 --pairs 2 --samples 8 \
+  --out rust-revision-benchmark.json
+```
+
+**Measured in the ChatGPT Debian 13 VM, October 25, 2026:** comparing the
+fork's pre-fusion head `521d0f63` (with candidate-pool optimization) against
+the same source plus fused DeBERTa query/key/value projections, on 5 vCPU,
+2 Rayon threads, two AB/BA measurement pairs, 8 warm samples per case:
+**1.025x geometric-mean speedup** across ten scenarios (about 2.5% lower
+latency in aggregate), with **10/10 exact output matches** (tolerance 1e-4)
+and approximately 713 MiB peak RSS per process. A separate single AB pair
+measured 1.064x. The performance gain is modest and noisy, and some
+individual workloads regress. These figures are local evidence, not an
+independently reproduced CI performance claim or a universal speedup.
+
+A related Python parity run on the fused model retained **10/10 semantic
+matches** and **7/10 full confidence-metadata matches** versus GLiNER2 2.1.0;
+the three existing relation/record confidence-format differences were
+not introduced by this optimization.
+
+The fused DeBERTa QKV implementation preserves weight tensors and computes
+three attention projections through one matrix multiplication per layer.
+It adds a unit regression covering independently calculated projections for
+both biased and bias-free batched inputs. It does not affect ModernBERT or
+the legacy span model. There is no expectation of a GPU speedup without GPU
+benchmark evidence.
+
+Keep `cargo test --release --locked --lib` and the Python parity harness
+as correctness checks. Do not use a timing threshold as a mandatory CI gate
+on shared runners.

@@ -4,6 +4,8 @@
 //! logic runs on CPU vectors, which are tiny (`[Q, L+1]` and a 32x32 pool).
 //! All head math is float32, like the reference implementation.
 
+use std::collections::HashSet;
+
 use candle_core::{DType, Device, Module, Result, Tensor, D};
 use candle_nn::{layer_norm, linear, LayerNorm, Linear, VarBuilder};
 
@@ -266,6 +268,18 @@ fn dot(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
 
+/// Max over query rows, walking each row sequentially for cache locality.
+/// The query order is preserved so this matches the previous column-wise fold.
+fn union_max(rows: &[Vec<f32>], n: usize) -> Vec<f32> {
+    let mut union = vec![MASK_LOGIT; n];
+    for row in rows {
+        for (best, &score) in union.iter_mut().zip(row.iter()) {
+            *best = best.max(score);
+        }
+    }
+    union
+}
+
 impl DocumentCandidatePool {
     fn build(&self, boundary: &Tensor, marginals: &Marginals) -> Result<Vec<PooledCandidate>> {
         let n = boundary.dim(0)?;
@@ -274,17 +288,18 @@ impl DocumentCandidatePool {
         let end_all = tensor_to_vec2(&self.end_projection.forward(boundary)?)?;
         let inv_sqrt_d = 1.0 / (self.boundary_dim as f32).sqrt();
 
-        let union = |rows: &[Vec<f32>]| -> Vec<f32> {
-            (0..n)
-                .map(|i| rows.iter().map(|r| r[i]).fold(MASK_LOGIT, f32::max))
-                .collect()
-        };
-        let union_start = union(&marginals.start);
-        let union_end = union(&marginals.end);
+        let union_start = union_max(&marginals.start, n);
+        let union_end = union_max(&marginals.end);
 
         let k = self.top_k.min(n);
         let starts: Vec<usize> = argsort_desc(&union_start).into_iter().take(k).collect();
         let ends: Vec<usize> = argsort_desc(&union_end).into_iter().take(k).collect();
+        // Reverse indexes reuse the already-computed Cartesian compatibility
+        // matrix rather than recomputing dot products for retained candidates.
+        let mut start_rank = vec![0usize; n];
+        let mut end_rank = vec![0usize; n];
+        for (rank, &start) in starts.iter().enumerate() { start_rank[start] = rank; }
+        for (rank, &end) in ends.iter().enumerate() { end_rank[end] = rank; }
 
         // Cartesian pairs in (start rank, end rank) order.
         let mut pair_s = Vec::with_capacity(k * k);
@@ -301,12 +316,12 @@ impl DocumentCandidatePool {
         }
         let pairs = pair_s.len();
 
-        let mut keys: Vec<usize> = Vec::new();
-        let mut scores: Vec<f32> = Vec::new();
-        let mut valid: Vec<bool> = Vec::new();
-
         // Per-query quota, ranked above every ordinary global score.
         let quota = self.min_pool_per_query.min(pairs);
+        let total = pairs + q * quota;
+        let mut keys: Vec<usize> = Vec::with_capacity(total);
+        let mut scores: Vec<f32> = Vec::with_capacity(total);
+        let mut valid: Vec<bool> = Vec::with_capacity(total);
         if quota > 0 {
             for qi in 0..q {
                 let per_query: Vec<f32> = (0..pairs)
@@ -336,7 +351,7 @@ impl DocumentCandidatePool {
             .into_iter()
             .map(|key| {
                 let (start, end) = (key / n, key % n);
-                PooledCandidate { start, end, compat: dot(&start_all[start], &end_all[end]) * inv_sqrt_d }
+                PooledCandidate { start, end, compat: compat[start_rank[start] * k + end_rank[end]] }
             })
             .collect())
     }
@@ -345,6 +360,30 @@ impl DocumentCandidatePool {
 /// `_deduplicate_pool`: keep the best-scored occurrence of every key and return
 /// up to `capacity` valid keys ordered by score (ties by ascending key).
 fn deduplicate_pool(keys: &[usize], scores: &[f32], valid: &[bool], capacity: usize, n: usize) -> Vec<usize> {
+    if capacity == 0 { return Vec::new(); }
+    // A masked candidate has sentinel score MASK_LOGIT. If real candidates
+    // approach the sentinel (or are NaN), retain the exact reference sort
+    // below, including its masked-slot tie behavior.
+    if scores.iter().zip(valid).any(|(&score, &ok)| ok && !(score > MASK_LOGIT)) {
+        return deduplicate_pool_reference(keys, scores, valid, capacity, n);
+    }
+    // Common path: every valid score outranks masked slots. One score/key
+    // ordering followed by one seen-key pass is equivalent to the reference's
+    // three stable sorts and two intermediate arrays, including its tie order.
+    let mut order: Vec<usize> = (0..keys.len()).filter(|&i| valid[i]).collect();
+    order.sort_unstable_by(|&a, &b| scores[b].total_cmp(&scores[a]).then(keys[a].cmp(&keys[b])).then(a.cmp(&b)));
+    let mut seen = HashSet::with_capacity(capacity.min(order.len()));
+    let mut selected = Vec::with_capacity(capacity.min(order.len()));
+    for index in order {
+        if seen.insert(keys[index]) {
+            selected.push(keys[index]);
+            if selected.len() == capacity { break; }
+        }
+    }
+    selected
+}
+
+fn deduplicate_pool_reference(keys: &[usize], scores: &[f32], valid: &[bool], capacity: usize, n: usize) -> Vec<usize> {
     let invalid_key = n * n;
     let keys: Vec<usize> = keys.iter().zip(valid).map(|(&k, &v)| if v { k } else { invalid_key }).collect();
     let scores: Vec<f32> = scores.iter().zip(valid).map(|(&s, &v)| if v { s } else { MASK_LOGIT }).collect();
@@ -1087,6 +1126,80 @@ mod tests {
         let valid = [true, true, true, false];
         assert_eq!(deduplicate_pool(&keys, &scores, &valid, 10, 4), vec![5, 3]);
         assert_eq!(deduplicate_pool(&keys, &scores, &valid, 1, 4), vec![5]);
+    }
+
+    #[test]
+    #[ignore = "microbenchmark; run manually with --ignored --nocapture on an idle CPU"]
+    fn benchmark_pool_selection_reference_vs_single_sort() {
+        use std::hint::black_box;
+        use std::time::Instant;
+        let n = 48;
+        let capacity = 192;
+        let mut state = 0x1234_5678_9abcu64;
+        let mut keys = Vec::new();
+        let mut scores = Vec::new();
+        let mut valid = Vec::new();
+        for _ in 0..1024 {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            keys.push(((state >> 24) as usize) % (n * n));
+            scores.push((state >> 36) as f32 / (1u64 << 28) as f32);
+            valid.push(state & 3 != 0);
+        }
+        assert_eq!(deduplicate_pool(&keys, &scores, &valid, capacity, n),
+                   deduplicate_pool_reference(&keys, &scores, &valid, capacity, n));
+        let repeats = 3000;
+        let reference_start = Instant::now();
+        for _ in 0..repeats {
+            black_box(deduplicate_pool_reference(black_box(&keys), black_box(&scores), black_box(&valid), capacity, n));
+        }
+        let reference_ns = reference_start.elapsed().as_nanos() as f64 / repeats as f64;
+        let optimized_start = Instant::now();
+        for _ in 0..repeats {
+            black_box(deduplicate_pool(black_box(&keys), black_box(&scores), black_box(&valid), capacity, n));
+        }
+        let optimized_ns = optimized_start.elapsed().as_nanos() as f64 / repeats as f64;
+        println!("pool selection: reference {:.1}us optimized {:.1}us speedup {:.2}x",
+                 reference_ns / 1000.0, optimized_ns / 1000.0, reference_ns / optimized_ns);
+    }
+
+    #[test]
+    fn fast_dedup_matches_reference_for_duplicate_masked_and_tied_candidates() {
+        // Fixed LCG to avoid a test dependency and exercise thousands of small
+        // candidate sets, including the sentinel fallback and equal scores.
+        let mut state: u64 = 0x5eedf00d;
+        for count in 0..1000 {
+            let n = 17;
+            let len = 1 + count % 189;
+            let mut keys = Vec::new();
+            let mut scores = Vec::new();
+            let mut valid = Vec::new();
+            for _ in 0..len {
+                state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+                keys.push(((state >> 32) as usize) % (n * n));
+                scores.push(match (state >> 24) % 13 {
+                    0 => MASK_LOGIT,
+                    1 => MASK_LOGIT - 1.0,
+                    _ => (((state >> 16) % 17) as f32) * 0.5,
+                });
+                valid.push((state & 7) != 0);
+            }
+            let capacity = 1 + (count % 48);
+            assert_eq!(
+                deduplicate_pool(&keys, &scores, &valid, capacity, n),
+                deduplicate_pool_reference(&keys, &scores, &valid, capacity, n),
+                "candidate set {count}"
+            );
+        }
+    }
+
+    #[test]
+    fn union_max_preserves_query_order_and_mask_sentinel() {
+        let rows = vec![vec![-10002.0, 2.0, 3.0], vec![0.0, 7.0, 1.0], vec![4.0, 1.0, 5.0]];
+        let baseline: Vec<f32> = (0..3)
+            .map(|i| rows.iter().map(|r| r[i]).fold(MASK_LOGIT, f32::max))
+            .collect();
+        assert_eq!(union_max(&rows, 3), baseline);
+        assert_eq!(union_max(&[], 3), vec![MASK_LOGIT; 3]);
     }
 
     #[test]

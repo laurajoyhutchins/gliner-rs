@@ -17,8 +17,11 @@ class DoclingBridgeTests(unittest.TestCase):
             "schema_name": "DoclingDocument",
             "version": "1.10.0",
             "pages": {"40": {"page_no": 40, "size": {"width": 612, "height": 792}}},
-            "texts": [{"text": "A test equipment label", "prov": [{"page_no": 40}]}],
+            "body": {"children": [{"$ref": "#/texts/0"}, {"$ref": "#/tables/0"}]},
+            "groups": [],
+            "texts": [{"self_ref": "#/texts/0", "text": "A test equipment label", "prov": [{"page_no": 40}]}],
             "tables": [{
+                "self_ref": "#/tables/0",
                 "prov": [{"page_no": 40}],
                 "data": {"table_cells": [
                     {"text": "Voltage", "start_row_offset_idx": 0, "start_col_offset_idx": 0},
@@ -36,6 +39,14 @@ class DoclingBridgeTests(unittest.TestCase):
         chunks = make_chunks({40: blocks}, {40}, 120)
         self.assertTrue(chunks)
         self.assertTrue(all(chunk["page"] == 40 for chunk in chunks))
+
+    def test_nested_groups_preserve_reading_order(self):
+        self.document["groups"] = [{"self_ref": "#/groups/0", "children": [
+            {"$ref": "#/tables/0"}, {"$ref": "#/texts/0"}]}]
+        self.document["body"]["children"] = [{"$ref": "#/groups/0"}]
+        blocks, count = extract_page(self.document, 40)
+        self.assertEqual(count, 1)
+        self.assertEqual(blocks, ["Voltage | Current", "480 V | 20 A", "A test equipment label"])
 
     def test_invalid_provenance_is_not_silently_relabelled(self):
         with self.assertRaises(ValueError):

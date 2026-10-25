@@ -24,6 +24,7 @@ import urllib.error
 import urllib.request
 
 from prepare_corpus import digest
+from audit_quantities import audit_quantity_candidates
 
 LABELS = ["electrical equipment", "voltage rating", "current rating",
           "section reference", "exception", "location"]
@@ -255,6 +256,16 @@ def main():
               "geomean_python_over_rust": round(math.exp(statistics.mean(math.log(n) for n in speedups)), 3),
               "total_rust_median_ms": round(sum(x["rust"]["median_ms"] for x in rows), 3),
               "total_python_median_ms": round(sum(x["python"]["median_ms"] for x in rows), 3)}
+    # Quantity admission is a separate deterministic safety check. The raw
+    # model outputs and their Python/Rust parity remain untouched.
+    report["quantity_admission_rust"] = audit_quantity_candidates(cases, rust)
+    report["quantity_admission_python"] = audit_quantity_candidates(cases, python)
+    from jsonschema import Draft202012Validator
+    admission_schema = json.loads((Path(__file__).with_name("contracts")
+                                   / "quantity-admission.schema.json").read_text())
+    validator = Draft202012Validator(admission_schema)
+    validator.validate(report["quantity_admission_rust"])
+    validator.validate(report["quantity_admission_python"])
     if args.gold_json:
         gold = json.loads(args.gold_json.read_text())
         if gold.get("format_version") != 1 or gold.get("source_sha256") != corpus["source_sha256"]:

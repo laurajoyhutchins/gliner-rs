@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Private-PDF table transcription cross-check summary",
+  "type": "object",
+  "required": [
+    "audit_kind",
+    "source_sha256",
+    "table_artifact_sha256",
+    "cells_total",
+    "normalized_exact",
+    "needs_review",
+    "match_fraction",
+    "counts_by_status",
+    "unresolved_positions",
+    "independent_human_review_complete",
+    "audit_passed_without_disagreements"
+  ],
+  "properties": {
+    "audit_kind": {
+      "const": "pdf_embedded_text_cell_geometry_crosscheck_not_human_gold"
+    },
+    "source_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "table_artifact_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "cells_total": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "normalized_exact": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "needs_review": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "match_fraction": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": 0,
+      "maximum": 1
+    },
+    "counts_by_status": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 0
+      }
+    },
+    "unresolved_positions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "page",
+          "table_ref",
+          "row",
+          "column",
+          "status"
+        ],
+        "properties": {
+          "page": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "table_ref": {
+            "type": "string"
+          },
+          "row": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "column": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "independent_human_review_complete": {
+      "const": false
+    },
+    "audit_passed_without_disagreements": {
+      "type": "boolean"
+    }
+  },
+  "additionalProperties": false
+}

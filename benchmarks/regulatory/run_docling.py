@@ -186,6 +186,7 @@ def run(argv=None):
     ap.add_argument("--pdf", type=Path, required=True)
     ap.add_argument("--docling-bin", type=Path, required=True)
     ap.add_argument("--docling-revision", required=True, help="actual Docling git SHA/tag used to build CLI")
+    ap.add_argument("--expected-docling-sha256", help="attested executable SHA-256, from exact-revision build")
     ap.add_argument("--pages", default="40,80,100,230,350,450,550,650")
     ap.add_argument("--mode", choices=("standard", "text-layer"), default="standard")
     ap.add_argument("--private-dir", type=Path, required=True)
@@ -209,6 +210,8 @@ def run(argv=None):
     output_pages.mkdir(exist_ok=True)
     source_sha = sha256(args.pdf)
     binary_sha = sha256(args.docling_bin)
+    if args.expected_docling_sha256 and binary_sha != args.expected_docling_sha256.lower():
+        ap.error(f"Docling executable SHA-256 mismatch: {binary_sha}")
     blocks_by_page = {}
     page_receipts = []
     structured_tables: list[dict] = []
@@ -234,6 +237,7 @@ def run(argv=None):
         page_receipts.append({
             "page": page, "docling_json_sha256": sha256(destination),
             "text_elements": len(document["texts"]), "tables": table_count,
+            "table_cells": sum(len(t["cells"]) for t in page_tables),
             "docling_schema_version": document.get("version")
         })
     chunks = make_chunks(blocks_by_page, set(pages), args.max_chars)

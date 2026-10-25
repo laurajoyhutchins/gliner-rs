@@ -289,7 +289,7 @@ impl DocumentCandidatePool {
         let inv_sqrt_d = 1.0 / (self.boundary_dim as f32).sqrt();
 
         let union_start = union_max(&marginals.start, n);
-        let union_end = union_max(&marginals.end);
+        let union_end = union_max(&marginals.end, n);
 
         let k = self.top_k.min(n);
         let starts: Vec<usize> = argsort_desc(&union_start).into_iter().take(k).collect();

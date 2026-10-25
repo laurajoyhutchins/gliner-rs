@@ -210,3 +210,35 @@ accuracy. Source passages stay only in the local private directory.
 The older \`prepare_corpus.py --docling-json\` path now also requires
 \`--source-pdf\` so that its \`source_sha256\` identifies the original code
 book, not a transient JSON conversion artifact.
+
+### Owner-built Docling confirmation
+
+The owner's fork, \`laurajoyhutchins/docling.rs\`, was compiled on
+Ubuntu 24.04 from exact commit
+\`e91d7fe5e756aabae322bba10d48f4d8cfce8ce0\`, yielding
+Docling CLI \`2.51.0\`, binary SHA-256
+\`633ff50da0a3de30faa6e43521e0292cc224a15ec0ec4fbc5cdbc807820b6b5e\`.
+Ubuntu 22.04 was incompatible with bundled ONNX Runtime C++ symbols.
+
+The owner's binary reproduced **all 84 identical text-chunk SHA-256 values**
+on the same eight 2017 NEC physical pages compared with the upstream
+Docling v2.51.3 release. Running those chunks through both inference
+engines yielded **16/16 semantic and 16/16 numerical matches** within
+\`1e-4\`; the sum of per-case median timings from two samples was
+Rust/Candle **2415 ms** and Python/PyTorch **2056 ms**. This is
+end-to-end **text-layer** conversion, not ML layout or table accuracy
+verification.
+
+For future isolated builds, use the on-demand
+\`.github/workflows/docling-cli-transport.yml\` workflow with an exact
+40-character Docling fork commit SHA. It archives the compiled CLI with
+both binary and archive checksums, a source-revision manifest, and
+one-day artifact retention. It does not ship PDFs or extracted text.
+The usual pull-request CI never rebuilds Docling.
+
+**Structured-layout verification boundary:** \`--mode standard\` is wired
+through to the native Docling model pipeline but requires its separately
+licensed ONNX layout/TableFormer assets. That mode failed closed with
+\`layout_heron.onnx\` missing on the offline VM. No table-recognition or
+OCR claim is made until those assets are present and tested on pages
+with reviewed tables. It is not equivalent to the text-layer proof.

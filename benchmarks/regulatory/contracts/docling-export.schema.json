@@ -8,6 +8,8 @@
     "schema_name",
     "version",
     "pages",
+    "body",
+    "groups",
     "texts",
     "tables"
   ],
@@ -99,10 +101,47 @@
                     }
                   },
                   "additionalProperties": true
-                }
+                },
+                "minItems": 1
               }
             },
             "additionalProperties": true
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "body": {
+      "type": "object",
+      "required": [
+        "children"
+      ],
+      "properties": {
+        "children": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ref"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "groups": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "children"
+        ],
+        "properties": {
+          "self_ref": {
+            "type": "string"
+          },
+          "children": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/ref"
+            }
           }
         },
         "additionalProperties": true
@@ -126,6 +165,19 @@
         },
         "additionalProperties": true
       }
+    },
+    "ref": {
+      "type": "object",
+      "required": [
+        "$ref"
+      ],
+      "properties": {
+        "$ref": {
+          "type": "string",
+          "pattern": "^#/(texts|tables|groups)/[0-9]+$"
+        }
+      },
+      "additionalProperties": false
     }
   },
   "additionalProperties": true

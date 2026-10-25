@@ -360,6 +360,10 @@ python3 benchmarks/regulatory/audit_tables.py \
 ```
 
 The `--require-exact` flag exits nonzero if any unresolved differences remain.
+Both source-safe table audits and quantity admission results are validated
+against the repository's Draft 2020-12 JSON Schemas in
+`contracts/table-text-audit.schema.json` and
+`contracts/quantity-admission.schema.json`.
 The standard `run_docling.py --audit-pdf-text` option also includes the
 source-safe audit result in its private receipt. The detailed comparison
 contains licensed source snippets and must never be published.

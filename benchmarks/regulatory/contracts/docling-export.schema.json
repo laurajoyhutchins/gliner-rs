@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/laurajoyhutchins/gliner-rs/blob/master/benchmarks/regulatory/contracts/docling-export.schema.json",
+  "title": "Pinned DoclingDocument JSON interface for GLiNER regulatory extraction",
+  "description": "Consumption boundary: DoclingDocument text, tables and original physical PDF page provenance. Extra Docling fields remain valid.",
+  "type": "object",
+  "required": [
+    "schema_name",
+    "version",
+    "pages",
+    "texts",
+    "tables"
+  ],
+  "properties": {
+    "schema_name": {
+      "const": "DoclingDocument"
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "pages": {
+      "type": "object",
+      "minProperties": 1,
+      "patternProperties": {
+        "^[1-9][0-9]*$": {
+          "type": "object",
+          "required": [
+            "page_no"
+          ],
+          "properties": {
+            "page_no": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "texts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "text",
+          "prov"
+        ],
+        "properties": {
+          "text": {
+            "type": "string"
+          },
+          "prov": {
+            "$ref": "#/$defs/provenance"
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "tables": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "prov",
+          "data"
+        ],
+        "properties": {
+          "prov": {
+            "$ref": "#/$defs/provenance"
+          },
+          "data": {
+            "type": "object",
+            "required": [
+              "table_cells"
+            ],
+            "properties": {
+              "table_cells": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "text",
+                    "start_row_offset_idx",
+                    "start_col_offset_idx"
+                  ],
+                  "properties": {
+                    "text": {
+                      "type": "string"
+                    },
+                    "start_row_offset_idx": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "start_col_offset_idx": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "additionalProperties": true
+                }
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "$defs": {
+    "provenance": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "page_no"
+        ],
+        "properties": {
+          "page_no": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

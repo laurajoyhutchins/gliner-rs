@@ -209,11 +209,11 @@ pub fn propose_relation_pairs(
     for (relation, roles) in relations.iter().enumerate() {
         let heads = select(roles.head_query, settings.heads_per_relation)?;
         let tails = select(roles.tail_query, settings.tails_per_relation)?;
-        let mut pairs: Vec<(f32, (usize, usize), (usize, usize))> = Vec::new();
+        let mut pairs: Vec<(f32, f32, f32, (usize, usize), (usize, usize))> = Vec::new();
         for &(hp, hspan) in &heads {
             for &(tp, tspan) in &tails {
                 if hspan != tspan {
-                    pairs.push((hp * tp, hspan, tspan));
+                    pairs.push((hp * tp, hp, tp, hspan, tspan));
                 }
             }
         }
@@ -222,7 +222,7 @@ pub fn propose_relation_pairs(
             pairs
                 .into_iter()
                 .take(settings.pair_cap)
-                .map(|(_, head, tail)| RelationPair { relation, head, tail }),
+                .map(|(_, hp, tp, head, tail)| RelationPair { relation, head, tail, head_prob: hp, tail_prob: tp }),
         );
     }
     Ok(out)
@@ -237,9 +237,12 @@ pub type Mention = (String, usize, usize);
 
 #[derive(Debug, Clone)]
 pub struct RelationEdge {
+    /// Relation-pair score, distinct from the two candidate argument scores.
     pub score: f32,
     pub head: Mention,
     pub tail: Mention,
+    pub head_score: f32,
+    pub tail_score: f32,
 }
 
 fn semantic_text(value: &str) -> String {
@@ -252,46 +255,47 @@ pub fn deduplicate_relation_edges(edges: Vec<RelationEdge>) -> Vec<RelationEdge>
         return edges;
     }
 
-    let canonical = |side: fn(&RelationEdge) -> &Mention| -> HashMap<(usize, usize), Mention> {
+    let canonical = |side: fn(&RelationEdge) -> (&Mention, f32)| -> HashMap<(usize, usize), (Mention, f32)> {
         let mut order: Vec<(usize, usize)> = Vec::new();
-        let mut mentions: HashMap<(usize, usize), Mention> = HashMap::new();
+        let mut mentions: HashMap<(usize, usize), (Mention, f32)> = HashMap::new();
         for edge in &edges {
-            let m = side(edge);
+            let (m, p) = side(edge);
             let coords = (m.1, m.2);
             if !mentions.contains_key(&coords) {
                 order.push(coords);
             }
-            mentions.insert(coords, m.clone());
+            mentions.insert(coords, (m.clone(), p));
         }
         let mut result = HashMap::new();
         for &(start, end) in &order {
-            let mut best: Option<&Mention> = None;
+            let mut best: Option<&(Mention, f32)> = None;
             for coords in &order {
                 let cand = &mentions[coords];
-                if cand.1 <= start && cand.2 >= end {
+                if cand.0.1 <= start && cand.0.2 >= end {
                     let better = match best {
                         None => true,
-                        Some(b) => (cand.2 - cand.1, -(cand.1 as i64)) > (b.2 - b.1, -(b.1 as i64)),
+                        Some(b) => (cand.0.2 - cand.0.1, -(cand.0.1 as i64))
+                            > (b.0.2 - b.0.1, -(b.0.1 as i64)),
                     };
                     if better {
                         best = Some(cand);
                     }
                 }
             }
-            result.insert((start, end), best.unwrap().clone());
+            result.insert((start, end), best.expect("candidate contains itself").clone());
         }
         result
     };
-    let head_canonical = canonical(|e| &e.head);
-    let tail_canonical = canonical(|e| &e.tail);
+    let head_canonical = canonical(|e| (&e.head, e.head_score));
+    let tail_canonical = canonical(|e| (&e.tail, e.tail_score));
 
     let mut exact_order: Vec<(usize, usize, usize, usize)> = Vec::new();
     let mut exact: HashMap<(usize, usize, usize, usize), RelationEdge> = HashMap::new();
     for edge in &edges {
-        let head = head_canonical[&(edge.head.1, edge.head.2)].clone();
-        let tail = tail_canonical[&(edge.tail.1, edge.tail.2)].clone();
+        let (head, head_score) = head_canonical[&(edge.head.1, edge.head.2)].clone();
+        let (tail, tail_score) = tail_canonical[&(edge.tail.1, edge.tail.2)].clone();
         let key = (head.1, head.2, tail.1, tail.2);
-        let normalized = RelationEdge { score: edge.score, head, tail };
+        let normalized = RelationEdge { score: edge.score, head, tail, head_score, tail_score };
         match exact.get(&key) {
             None => {
                 exact_order.push(key);
@@ -396,12 +400,13 @@ mod tests {
     fn relation_dedup_prefers_complete_mentions() {
         let m = |t: &str, s: usize, e: usize| (t.to_string(), s, e);
         let edges = vec![
-            RelationEdge { score: 0.9, head: m("Alice", 0, 5), tail: m("Acme", 16, 20) },
-            RelationEdge { score: 0.8, head: m("Alice", 0, 5), tail: m("Acme Corp", 16, 25) },
+            RelationEdge { score: 0.9, head: m("Alice", 0, 5), tail: m("Acme", 16, 20), head_score: 0.92, tail_score: 0.81 },
+            RelationEdge { score: 0.8, head: m("Alice", 0, 5), tail: m("Acme Corp", 16, 25), head_score: 0.92, tail_score: 0.89 },
         ];
         let out = deduplicate_relation_edges(edges);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].tail.0, "Acme Corp");
+        assert_eq!(out[0].tail_score, 0.89);
     }
     fn relation_settings() -> RelationProposalSettings {
         RelationProposalSettings {
@@ -422,6 +427,8 @@ mod tests {
         assert_eq!(pairs[0].relation, 0);
         assert_eq!(pairs[0].head, spans[0]);
         assert_eq!(pairs[0].tail, spans[1]);
+        assert_eq!(pairs[0].head_prob, 0.9);
+        assert_eq!(pairs[0].tail_prob, 0.8);
     }
 
     #[test]

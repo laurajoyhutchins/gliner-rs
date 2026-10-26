@@ -1001,6 +1001,9 @@ impl BoundaryModel {
                 instance.insert(field.name.clone(), value);
             }
             if instance.values().any(|v| !is_empty_value(v)) {
+                if pass.opts.include_confidence {
+                    instance.insert("confidence".to_string(), json!(record.score));
+                }
                 instances.push(format_struct(instance));
             }
         }
@@ -1239,7 +1242,7 @@ impl BoundaryModel {
                 continue;
             }
             let (Some(head), Some(tail)) = (pass.mention(pair.head), pass.mention(pair.tail)) else { continue };
-            let edge = RelationEdge { score, head, tail };
+            let edge = RelationEdge { score, head, tail, head_score: pair.head_prob, tail_score: pair.tail_prob };
             match edges.iter_mut().find(|(name, _)| *name == spec.name) {
                 Some((_, list)) => list.push(edge),
                 None => edges.push((spec.name.clone(), vec![edge])),
@@ -1352,14 +1355,18 @@ fn format_struct(instance: Map<String, Value>) -> Value {
 }
 
 fn format_relation(edge: &RelationEdge, opts: &ExtractOptions) -> Value {
-    let side = |m: &(String, usize, usize)| match (opts.include_spans, opts.include_confidence) {
-        (true, true) => json!({"text": m.0, "start": m.1, "end": m.2, "confidence": edge.score}),
+    let side = |m: &(String, usize, usize), score: f32| match (opts.include_spans, opts.include_confidence) {
+        (true, true) => json!({"text": m.0, "start": m.1, "end": m.2, "confidence": score}),
         (true, false) => json!({"text": m.0, "start": m.1, "end": m.2}),
-        (false, true) => json!({"text": m.0, "confidence": edge.score}),
+        (false, true) => json!({"text": m.0, "confidence": score}),
         (false, false) => json!(m.0),
     };
     if opts.include_spans || opts.include_confidence {
-        json!({"head": side(&edge.head), "tail": side(&edge.tail)})
+        let mut value = json!({"head": side(&edge.head, edge.head_score), "tail": side(&edge.tail, edge.tail_score)});
+        if opts.include_confidence {
+            value["confidence"] = json!(edge.score);
+        }
+        value
     } else {
         json!([edge.head.0, edge.tail.0])
     }
@@ -1792,5 +1799,68 @@ mod in_memory_safetensors_tests {
         let header = r#"{"a":{"dtype":"F32","shape":[1],"data_offsets":[0,4]},"b":{"dtype":"F32","shape":[1],"data_offsets":[0,4]}}"#;
         let bytes = tensor_bytes(header, &1.25_f32.to_le_bytes());
         assert!(in_memory_var_builder(&bytes, &Device::Cpu, DType::F32).is_err());
+    }
+}
+
+#[cfg(test)]
+mod confidence_output_contract_tests {
+    use super::*;
+
+    #[test]
+    fn relation_confidence_distinguishes_arguments_and_edge() {
+        let edge = RelationEdge {
+            score: 0.63,
+            head: ("Alice".into(), 0, 5),
+            tail: ("Acme".into(), 15, 19),
+            head_score: 0.97,
+            tail_score: 0.82,
+        };
+        let detailed = ExtractOptions {
+            include_confidence: true,
+            include_spans: true,
+            ..Default::default()
+        };
+        let value = format_relation(&edge, &detailed);
+        assert_eq!(value["confidence"], json!(0.63_f32));
+        assert_eq!(value["head"]["confidence"], json!(0.97_f32));
+        assert_eq!(value["tail"]["confidence"], json!(0.82_f32));
+        assert_eq!(value["head"]["start"], 0);
+        assert_eq!(value["tail"]["end"], 19);
+
+        let no_offsets = ExtractOptions { include_spans: false, ..detailed.clone() };
+        let value = format_relation(&edge, &no_offsets);
+        assert!(value["head"].get("start").is_none());
+        assert_eq!(value["head"]["confidence"], json!(0.97_f32));
+
+        let plain = ExtractOptions {
+            include_confidence: false,
+            include_spans: false,
+            ..Default::default()
+        };
+        assert_eq!(format_relation(&edge, &plain), json!(["Alice", "Acme"]));
+        let spans_only = ExtractOptions { include_spans: true, ..plain };
+        let value = format_relation(&edge, &spans_only);
+        assert!(value.get("confidence").is_none());
+        assert!(value["head"].get("confidence").is_none());
+        assert_eq!(value["head"]["start"], 0);
+    }
+
+    #[test]
+    fn relation_endpoints_with_identical_offsets_keep_distinct_confidences() {
+        let edge = RelationEdge {
+            score: 0.5,
+            head: ("self".into(), 0, 4),
+            tail: ("self".into(), 0, 4),
+            head_score: 0.91,
+            tail_score: 0.87,
+        };
+        let opts = ExtractOptions {
+            include_confidence: true,
+            include_spans: true,
+            ..Default::default()
+        };
+        let value = format_relation(&edge, &opts);
+        assert_eq!(value["head"]["confidence"], json!(0.91_f32));
+        assert_eq!(value["tail"]["confidence"], json!(0.87_f32));
     }
 }

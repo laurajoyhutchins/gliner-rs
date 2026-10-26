@@ -1,0 +1,83 @@
+name: A/B DeBERTa CPU-native code generation
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/encoder-native-cpu-experiment.yml'
+      - 'benchmarks/compare_rust_revisions.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cpu-native:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.98.0'
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Build portable baseline from identical Rust source
+        run: |
+          cargo build --release --locked --bin gliner
+          mkdir -p portable
+          cp target/release/gliner portable/gliner
+      - name: Build architecture-tuned candidate from identical Rust source
+        run: |
+          RUSTFLAGS="-C target-cpu=native" cargo build --release --locked --bin gliner
+          mkdir -p native
+          cp target/release/gliner native/gliner
+      - name: Install pinned checkpoint transport
+        run: python -m pip install huggingface_hub==1.33.0
+      - name: Download hash-verified checkpoint
+        run: |
+          python - <<'PY'
+          from huggingface_hub import snapshot_download
+          snapshot_download(
+              repo_id='fastino/gliner2.5-small-v1',
+              revision='df5910e44bc4ffdb0d95399a83b0ca4516349aa5',
+              local_dir='checkpoint',
+              allow_patterns=['config.json', 'encoder_config/config.json', 'tokenizer.json', 'model.safetensors'],
+          )
+          PY
+          printf '%s  %s\n' '4ee982787ace270d4bf15dbcb28ced38e0aa201372347114ceedd6336055de2b' checkpoint/model.safetensors | sha256sum --check
+      - name: Snapshot CPU model and Rust binary provenance
+        run: |
+          rustc --version --verbose > native-cpu-host.txt
+          lscpu >> native-cpu-host.txt
+          sha256sum portable/gliner native/gliner >> native-cpu-host.txt
+          printf 'BASELINE_RUSTFLAGS=<none>\nCANDIDATE_RUSTFLAGS=-C target-cpu=native\n' >> native-cpu-host.txt
+      - name: Compare whole-model general inference outputs and latency
+        run: |
+          python benchmarks/compare_rust_revisions.py \
+            --baseline portable/gliner --candidate native/gliner \
+            --model-dir checkpoint \
+            --checkpoint-sha256 4ee982787ace270d4bf15dbcb28ced38e0aa201372347114ceedd6336055de2b \
+            --threads 2 --pairs 2 --warmups 2 --samples 8 \
+            --out native-cpu-general.json
+      - name: Compare record-heavy inference outputs and latency
+        run: |
+          python benchmarks/compare_rust_revisions.py \
+            --baseline portable/gliner --candidate native/gliner \
+            --model-dir checkpoint --cases benchmarks/record_perf_cases.json \
+            --checkpoint-sha256 4ee982787ace270d4bf15dbcb28ced38e0aa201372347114ceedd6336055de2b \
+            --threads 2 --pairs 2 --warmups 2 --samples 8 \
+            --out native-cpu-records.json
+      - name: Upload reproducible experiment results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-cpu-encoder-experiment
+          path: |
+            native-cpu-general.json
+            native-cpu-records.json
+            native-cpu-host.txt
+            native-cpu-general.*.log
+            native-cpu-records.*.log
+          if-no-files-found: warn
+          retention-days: 7

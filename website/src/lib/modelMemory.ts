@@ -61,7 +61,8 @@ export function estimateReplacement(
 
 export class ModelMemoryBudgetError extends Error {
   readonly name = "ModelMemoryBudgetError";
-  constructor(readonly estimate: MemoryEstimate, active: ModelDef | null, replacement: ModelDef) {
+  readonly estimate: MemoryEstimate;
+  constructor(estimate: MemoryEstimate, active: ModelDef | null, replacement: ModelDef) {
     super(
       `Loading ${replacement.label}${active ? ` while keeping ${active.label} active` : ""} may require approximately ` +
       `${estimate.estimatedPeakMiB} MiB, above the conservative ${estimate.budgetMiB} MiB browser budget. ` +
@@ -69,6 +70,7 @@ export class ModelMemoryBudgetError extends Error {
       `Choose "unload active model", then retry; if the tab's WebAssembly memory has already grown, ` +
       `refresh the tab before loading ${replacement.label}. Large models are better run in the native CLI.`,
     );
+    this.estimate = estimate;
   }
 }
 

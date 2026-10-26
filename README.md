@@ -239,10 +239,11 @@ let results = model.extract_entities_batch(
 )?; // one Value per text, in order
 ```
 
-The texts are tokenized independently, padded to the batch's longest sequence, and run
-through the encoder together; padding is masked out of attention so every text's result is
-identical to what the single-text method would give it alone — batching only saves encoder
-calls, it never changes an answer. `gliner-classify` uses `classification_probabilities_batch`
+The texts are tokenized independently. Boundary checkpoints now adaptively use bounded
+length groups for high-padding or 16+-document batches and retain a single padded pass
+for smaller near-uniform batches. The resulting inference output keeps each document's
+order and offsets; the optional explicit `extract_batch_bucketed` forces length grouping.
+Batching changes scheduling rather than model weights or prediction semantics. `gliner-classify` uses `classification_probabilities_batch`
 for `-f`/multi-text input. As with the rest of the API, one call takes one schema: every text
 in a batch is scored against the same entities/labels/structures, only the documents vary.
 
@@ -271,13 +272,30 @@ curl -s localhost:8000/v1/extract -H 'Content-Type: application/json' -d '{
 #   "relation_extraction":{...},"sentiment":{"label":"neutral","confidence":0.97}}}
 ```
 
-Fields: `text` (required), at least one of `entities` / `relations` / `json` / `classify` (same syntax as `--entities`,
+The same loaded checkpoint and schema can score a bounded multi-document batch
+through `POST /v1/extract/batch`:
+
+```bash
+curl -s localhost:8000/v1/extract/batch -H 'Content-Type: application/json' -d '{
+  "texts": ["Alice works for Acme.", "Bob works for Contoso."],
+  "entities": ["person", "company"], "spans": true, "confidence": true
+}'
+# {"model":"multi","results":[{"entities":{...}}, {"entities":{...}}]}
+```
+
+A batch shares every schema and option, returns one full result per input in the
+original order, and occupies one slot in the existing serialized scoring queue.
+It accepts 1–64 nonempty documents, up to 16 KiB per document and 64 KiB
+combined UTF-8 text. Requests over the limits fail with 422 before inference.
+The 1 MiB HTTP body limit also applies. The single-text endpoint remains unchanged.
+
+Fields: `text` (required for the single endpoint), at least one of `entities` / `relations` / `json` / `classify` (same syntax as `--entities`,
 `--relations`, `--json`, `--classify`), and optionally `legacy_structures`, `threshold` (0.5), `spans`, `confidence`,
 `overlap` (`flat`, `nested`, `allow`, `longest`), `max_words`, and `model` (must equal the loaded model's name:
 the `--model` path, else the variant key). `GET /health` returns `{"status":"ready","model":...}` without running the
 model.
 
-Requests run one at a time behind a bounded queue (`--max-queued`, default 16): when it is full the server answers
+Single and batch requests run one at a time behind a bounded queue (`--max-queued`, default 16): when it is full the server answers
 `429` with `Retry-After: 1`. Bad input (invalid JSON or fields, an empty schema, relations or structures on a
 span-architecture checkpoint, a body over 1 MiB) is `422` with
 `{"error": {"message", "type": "invalid_request_error", "code": 422, "param"}}`; a failed forward is

@@ -48,3 +48,39 @@ npx wrangler pages deploy dist --project-name gliner-rs-website
 
 `index.html`, `public/robots.txt` and `public/sitemap.xml` name the default
 `gliner-rs.apiplant.com` domain; update all three if the site moves.
+
+## Verified browser checkpoint downloads
+
+All Hugging Face models offered in the browser use `src/lib/checkpoint-locks.json`.
+Each entry conforms to `../contracts/checkpoint-lock.schema.json` and
+specifies the exact Hugging Face repository, immutable Git revision, and
+SHA-256 hashes of all four required files. The initial locks were obtained
+from pinned Hugging Face revisions: the published LFS SHA-256 hashes were used
+for large files, and smaller files were downloaded at the exact commit,
+checked against their published Git blob identities, then hashed with SHA-256.
+These are source-bound observations, **not an independent attestation of model
+trustworthiness**. Updating a model requires reviewing its new pinned lock.
+
+The browser checks SHA-256 while downloading and **before** writing any
+checkpoint to its versioned Cache API store. A corrupt cached file is evicted
+and fetched again; an interrupted, incomplete, or mismatching network response
+is never cached. The network fetch never resolves a mutable `main` ref.
+Incremental hashing does not require a second full-file buffer. When the
+server supplies Content-Length, bytes are written directly to one
+preallocated Uint8Array; otherwise the downloader collects chunks and creates
+one final contiguous buffer. WebAssembly itself may still copy these bytes.
+
+Model replacement is transactional: if a download or WebAssembly
+initialization fails, the prior model remains active. This can temporarily
+increase memory use while two models coexist, especially for the large browser
+checkpoints. Clearing cached files does **not** unload an already-running
+model. Explicitly chosen local directories remain user-managed and are not
+automatically claimed to match the published lock (including historical
+unversioned local layouts).
+
+```bash
+pnpm install --frozen-lockfile
+pnpm test        # transactional lifecycle and corrupted/short/aborted downloads
+pnpm check       # TypeScript
+pnpm build       # deployable website
+```

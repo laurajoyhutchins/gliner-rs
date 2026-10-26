@@ -1,0 +1,90 @@
+[
+  {
+    "version": 1,
+    "repo": "fastino/gliner2.5-small-v1",
+    "revision": "df5910e44bc4ffdb0d95399a83b0ca4516349aa5",
+    "sha256": {
+      "config.json": "1b4e63ac964dc4204165bd1420735cd4c2e4bce97394d0b69fa3f7ea192a8e97",
+      "encoder_config/config.json": "db837d0dc587f5858687ef860c1f400de10f3c3e44f88daef8cbda80d74e4c9c",
+      "tokenizer.json": "cbc8ae6037812709c9c26f2a160f8dc48b0440bcb79c8141804259ae2d6adac3",
+      "model.safetensors": "4ee982787ace270d4bf15dbcb28ced38e0aa201372347114ceedd6336055de2b"
+    }
+  },
+  {
+    "version": 1,
+    "repo": "fastino/gliner2.5-multi-v1",
+    "revision": "cf5593a5d45e3bbf204b9df621b13b1c0cf25ee3",
+    "sha256": {
+      "config.json": "3e4a96bf01da1094180f2d8998411c1a9fd6e2ae4b5b3e4bc6950318cee95bb7",
+      "encoder_config/config.json": "fa4f9ef2903b5369ab172333aae4574e6a476511d7465845cf59f8360ee18716",
+      "tokenizer.json": "c62446df87ae18ec98b133f8f84fc449a07cc89bbf8ef192a4cb5f9c53777a7a",
+      "model.safetensors": "c1ff4ec0bc00031c15530b8f3c33d3677f27949e6a0cb52e1247a6224b6c5395"
+    }
+  },
+  {
+    "version": 1,
+    "repo": "fastino/gliner2.5-base-v1",
+    "revision": "54785d51df8d86a0d8f2eb212fec15871aad2c4d",
+    "sha256": {
+      "config.json": "d6b515c21ae2100c12267fb42a3f02c1e99ad87580366aebedb161efd74441c7",
+      "encoder_config/config.json": "d36a845b9f25dcaf1ec45a1c4bdf65ea4ac20596537e14530ec9f660a63aeca4",
+      "tokenizer.json": "cbc8ae6037812709c9c26f2a160f8dc48b0440bcb79c8141804259ae2d6adac3",
+      "model.safetensors": "7274094de2e0c2a37a386f55fc4e23061a954da5bd7a335e7dfe56f2743c277a"
+    }
+  },
+  {
+    "version": 1,
+    "repo": "fastino/GLiNER2.5-Decide",
+    "revision": "9d1bfb848cd16d93ee56ccbc59cd92bf0f284d90",
+    "sha256": {
+      "config.json": "501c6579278518e72dbba5a1f248b421dd5bfb13600db45d86c94c224368670b",
+      "encoder_config/config.json": "bd32f1484ba5a199f7a63df44df3814b839fffcf6e64478323c4689868ef6015",
+      "tokenizer.json": "3ad87d9ffe669147063e70850927dd2da90249e2acc5c8527f1eb65df467bcc8",
+      "model.safetensors": "40a5a23ff860dc3dff426cecd1048cacdd29c648c96db209dad818e9686dc997"
+    }
+  },
+  {
+    "version": 1,
+    "repo": "fastino/GLiNER2.5-multi-Decide",
+    "revision": "e173bca1f0c4217d7a55b3b0c705d5ece8a0218d",
+    "sha256": {
+      "config.json": "aa29cd584316b61b0bfed94d03ee1cfdaf28b46a37686293742929c49b8bd2f7",
+      "encoder_config/config.json": "d0ebbcb8b458e285a39e12cc315cbaf3d1c6f631e7281e6b22dd5b4071183f83",
+      "tokenizer.json": "c62446df87ae18ec98b133f8f84fc449a07cc89bbf8ef192a4cb5f9c53777a7a",
+      "model.safetensors": "9efe0f88c99f2aa794452e9559dc60e98d60d9fa2bf1b60cf2710411b6da5b4e"
+    }
+  },
+  {
+    "version": 1,
+    "repo": "fastino/gliner2-privacy-filter-PII-multi",
+    "revision": "1cb4166094dc58fa8d836429f060d6c95f62b495",
+    "sha256": {
+      "config.json": "164f17362bcf9d114067d3465e7374bfdd79ce6b605acb745de5a49dabb9595c",
+      "encoder_config/config.json": "f27dd63cc43a248d2566f0b6ad7a115db353676ce0561dcbca45bac766464c1a",
+      "tokenizer.json": "f6df10ec83bea993035b2dd7c39345a3d4fcf23421c2adb6cb4ffc1e6d1bc4b5",
+      "model.safetensors": "0280f6f39f6012da50b6640bad438d9b7e763a1b0102094115d1b710c4dd79b6"
+    }
+  },
+  {
+    "version": 1,
+    "repo": "fastino/gliguard-LLMGuardrails-300M",
+    "revision": "7776816b54581f37b90dd2de12dbe13123229a9b",
+    "sha256": {
+      "config.json": "ff16ad09c871fe218f786e8c498a615b9ecc26de85b0b7bd2fb03baacba8170b",
+      "encoder_config/config.json": "f75950b8f8a0d6e6d54f7976af63de8163f14dbc04a1505378bc5423566aa36d",
+      "tokenizer.json": "3ad87d9ffe669147063e70850927dd2da90249e2acc5c8527f1eb65df467bcc8",
+      "model.safetensors": "03132cef1def4bb172b586e662ffc3c30f76034411fc21cd309dd8f1b627c466"
+    }
+  },
+  {
+    "version": 1,
+    "repo": "fastino/GLiNER2-Guardrails-PII-Multi",
+    "revision": "aad696b2f6815e3dfc2d95908129eea5ed598562",
+    "sha256": {
+      "config.json": "164f17362bcf9d114067d3465e7374bfdd79ce6b605acb745de5a49dabb9595c",
+      "encoder_config/config.json": "f27dd63cc43a248d2566f0b6ad7a115db353676ce0561dcbca45bac766464c1a",
+      "tokenizer.json": "f6df10ec83bea993035b2dd7c39345a3d4fcf23421c2adb6cb4ffc1e6d1bc4b5",
+      "model.safetensors": "82ee0ed2483aa7eae3483e95b8622139f5bc7697de3294aec4d0d7088bdb7658"
+    }
+  }
+]

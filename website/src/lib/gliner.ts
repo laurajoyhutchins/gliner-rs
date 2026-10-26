@@ -1,13 +1,13 @@
-/** Loads gliner-rs's wasm module and GLiNER2 checkpoints fetched straight
- * from the Hugging Face Hub, entirely client-side — no backend involved.
- *
- * Checkpoint files are cached with the browser Cache API (origin-scoped, so
- * they survive reloads and switching between demo pages) keyed by their HF
- * URL, since HF's `resolve/main/...` content is immutable per commit.
+/** In-browser GLiNER model loading with pinned Hugging Face checkpoints.
+ * Network models are content-verified before use or cache admission. The
+ * active model is replaced only after a new model finishes initializing.
  */
 
 import { createSignal } from "solid-js";
-import { CHECKPOINT_FILES, hfFileUrl, type ModelDef } from "./models";
+import type { ModelDef } from "./models";
+import { CHECKPOINT_FILES, checkpointLock } from "./checkpointLocks";
+import { fetchVerifiedCheckpoint, clearVerifiedCheckpointCache, verifiedCheckpointCacheKeys } from "./verifiedCheckpoint";
+import { ModelLifecycle } from "./modelLifecycle";
 import {
   fsAccessSupported,
   getSubdirectory,
@@ -57,64 +57,20 @@ function loadWasm(): Promise<WasmExports> {
   return wasmReady;
 }
 
-const CACHE_NAME = "gliner-rs-checkpoints-v1";
-
 export interface DownloadProgress {
   file: string;
   fileIndex: number;
   fileCount: number;
-  /** Bytes loaded for the current file; total may be unknown (`null`) if the
-   * server didn't send `content-length`. */
   loaded: number;
   total: number | null;
-}
-
-async function fetchWithProgress(url: string, onProgress: (loaded: number, total: number | null) => void): Promise<Uint8Array> {
-  const cache = await caches.open(CACHE_NAME);
-  const cached = await cache.match(url);
-  if (cached) {
-    const buf = await cached.arrayBuffer();
-    onProgress(buf.byteLength, buf.byteLength);
-    return new Uint8Array(buf);
-  }
-
-  const resp = await fetch(url);
-  if (!resp.ok || !resp.body) {
-    throw new Error(`fetching ${url}: HTTP ${resp.status}`);
-  }
-  const totalHeader = resp.headers.get("content-length");
-  const total = totalHeader ? Number(totalHeader) : null;
-
-  const reader = resp.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let loaded = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-    loaded += value.byteLength;
-    onProgress(loaded, total);
-  }
-  const bytes = new Uint8Array(loaded);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-
-  // Best-effort: cache writes can fail (private browsing, quota) — the model
-  // still loaded, so don't fail the whole load over it.
-  try {
-    await cache.put(url, new Response(bytes, { headers: { "content-type": "application/octet-stream" } }));
-  } catch {
-    /* ignore */
-  }
-  return bytes;
 }
 
 export interface LoadedModel {
   model: WasmModel;
   def: ModelDef;
+  source: "hf" | "local";
+  revision?: string;
+  libraryHandle?: FileSystemDirectoryHandle;
 }
 
 /** A local mirror of several checkpoints, picked once as a single parent
@@ -157,7 +113,10 @@ export async function loadModelFromHandle(
   onProgress?: (p: DownloadProgress) => void,
 ): Promise<LoadedModel> {
   const wasm = await loadWasm();
-  const checkpointDir = await getSubdirectory(library.handle, hfRepoBasename(def.hfRepo));
+  const root = await getSubdirectory(library.handle, hfRepoBasename(def.hfRepo));
+  // The CLI's pinned cache nests files under a commit SHA. Continue to
+  // support explicit older/manual directories at the model root.
+  const checkpointDir = await root.getDirectoryHandle(checkpointLock(def.hfRepo).revision).catch(() => root);
   const bytes: Record<string, Uint8Array> = {};
   for (let i = 0; i < CHECKPOINT_FILES.length; i++) {
     const name = CHECKPOINT_FILES[i];
@@ -169,43 +128,49 @@ export async function loadModelFromHandle(
   const configJson = new TextDecoder().decode(bytes["config.json"]);
   const encoderConfigJson = new TextDecoder().decode(bytes["encoder_config/config.json"]);
   const model = wasm.WasmModel.load(bytes["model.safetensors"], bytes["tokenizer.json"], configJson, encoderConfigJson);
-  return { model, def };
+  return { model, def, source: "local", libraryHandle: library.handle };
 }
 
 /** Downloads (or reuses cached) checkpoint files for `def` and loads them
  * into a fresh `WasmModel`. Reports per-file byte progress via `onProgress`. */
-export async function loadModel(def: ModelDef, onProgress?: (p: DownloadProgress) => void): Promise<LoadedModel> {
+export async function loadModel(
+  def: ModelDef,
+  onProgress?: (p: DownloadProgress) => void,
+  signal?: AbortSignal,
+): Promise<LoadedModel> {
   const wasm = await loadWasm();
-  const files: Record<string, Uint8Array> = {};
+  const lock = checkpointLock(def.hfRepo);
+  const files = {} as Record<(typeof CHECKPOINT_FILES)[number], Uint8Array>;
   for (let i = 0; i < CHECKPOINT_FILES.length; i++) {
+    signal?.throwIfAborted();
     const file = CHECKPOINT_FILES[i];
-    const url = hfFileUrl(def.hfRepo, file);
-    files[file] = await fetchWithProgress(url, (loaded, total) =>
-      onProgress?.({ file, fileIndex: i, fileCount: CHECKPOINT_FILES.length, loaded, total }),
+    files[file] = await fetchVerifiedCheckpoint(
+      lock, file, ({ loaded, total }) =>
+        onProgress?.({ file, fileIndex: i, fileCount: CHECKPOINT_FILES.length, loaded, total }),
+      signal,
     );
   }
+  signal?.throwIfAborted();
   const configJson = new TextDecoder().decode(files["config.json"]);
   const encoderConfigJson = new TextDecoder().decode(files["encoder_config/config.json"]);
   const model = wasm.WasmModel.load(files["model.safetensors"], files["tokenizer.json"], configJson, encoderConfigJson);
-  return { model, def };
+  return { model, def, source: "hf", revision: lock.revision };
 }
 
-/** Clears every cached checkpoint file (used by a "clear cache" control). */
+/** Clears only verified cached bytes; an already loaded model keeps running. */
 export async function clearModelCache(): Promise<void> {
-  await caches.delete(CACHE_NAME);
+  await clearVerifiedCheckpointCache();
 }
 
 export async function cachedModelKeys(): Promise<string[]> {
-  if (!("caches" in window)) return [];
-  const cache = await caches.open(CACHE_NAME);
-  const keys = await cache.keys();
-  return keys.map((r) => r.url);
+  return verifiedCheckpointCacheKeys();
 }
 
 /** Shared "which model is currently loaded" state, so every demo tab can
  * reuse one loaded model instead of re-downloading per tab. */
 const [current, setCurrent] = createSignal<LoadedModel | null>(null);
 export const currentModel = current;
+const lifecycle = new ModelLifecycle(current, setCurrent);
 
 export type ModelSource = "hf" | "local";
 
@@ -280,8 +245,7 @@ export async function selectLocalLibrary(): Promise<LocalLibrary | null> {
   const library = await toLibrary(handle);
   setLocalLibrary(library);
   setPendingLibrary(null);
-  setPreferredSource("local");
-  writePersisted({ source: "local", localRootName: library.rootName });
+  writePersisted({ localRootName: library.rootName });
   return library;
 }
 
@@ -304,7 +268,6 @@ export function ensureLocalLibraryResumeAttempted(): void {
       : { rootName: handle.name, handle, checkpointNames: [] as string[] };
     if (granted) {
       setLocalLibrary(library);
-      setPreferredSource("local");
     } else {
       setPendingLibrary(library);
     }
@@ -324,23 +287,25 @@ export async function grantPendingLibraryAccess(): Promise<LocalLibrary | null> 
   const library = await toLibrary(pending.handle);
   setLocalLibrary(library);
   setPendingLibrary(null);
-  setPreferredSource("local");
   return library;
 }
 
 export async function selectModel(def: ModelDef, onProgress?: (p: DownloadProgress) => void): Promise<LoadedModel> {
   const existing = current();
-  if (existing && existing.def.hfRepo === def.hfRepo) {
+  const revision = checkpointLock(def.hfRepo).revision;
+  if (existing?.source === "hf" && existing.def.hfRepo === def.hfRepo && existing.revision === revision) {
+    lifecycle.cancelPending();
     setPreferredSource("hf");
     writePersisted({ source: "hf", hfModelKey: def.key });
     return existing;
   }
-  existing?.model.free();
-  const loaded = await loadModel(def, onProgress);
-  setCurrent(loaded);
-  setPreferredSource("hf");
-  writePersisted({ source: "hf", hfModelKey: def.key });
-  return loaded;
+  return lifecycle.replace(
+    (signal) => loadModel(def, onProgress, signal),
+    () => {
+      setPreferredSource("hf");
+      writePersisted({ source: "hf", hfModelKey: def.key });
+    },
+  );
 }
 
 export async function selectLocalModel(def: ModelDef, onProgress?: (p: DownloadProgress) => void): Promise<LoadedModel> {
@@ -349,17 +314,28 @@ export async function selectLocalModel(def: ModelDef, onProgress?: (p: DownloadP
   if (!library.checkpointNames.includes(hfRepoBasename(def.hfRepo))) {
     throw new Error(`${def.label} not found in ${library.rootName}`);
   }
-  writePersisted({ source: "local", localRootName: library.rootName, localModelKey: def.key });
   const existing = current();
-  if (existing && existing.def.key === def.key && preferredSource() === "local") return existing;
-  existing?.model.free();
-  const loaded = await loadModelFromHandle(def, library, onProgress);
-  setCurrent(loaded);
-  setPreferredSource("local");
-  return loaded;
+  if (existing?.source === "local" && existing.def.hfRepo === def.hfRepo && existing.libraryHandle === library.handle) {
+    lifecycle.cancelPending();
+    setPreferredSource("local");
+    writePersisted({ source: "local", localRootName: library.rootName, localModelKey: def.key });
+    return existing;
+  }
+  return lifecycle.replace(
+    async (signal) => {
+      signal.throwIfAborted();
+      const loaded = await loadModelFromHandle(def, library, onProgress);
+      // Filesystem reads are not cancellable on all supported browsers, so
+      // stale load completions are disposed by ModelLifecycle.replace.
+      return loaded;
+    },
+    () => {
+      setPreferredSource("local");
+      writePersisted({ source: "local", localRootName: library.rootName, localModelKey: def.key });
+    },
+  );
 }
 
 export function unloadModel(): void {
-  current()?.model.free();
-  setCurrent(null);
+  lifecycle.unload();
 }

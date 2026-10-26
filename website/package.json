@@ -9,9 +9,11 @@
     "dev": "node scripts/check-wasm.mjs && vite",
     "build": "node scripts/check-wasm.mjs && tsc --noEmit && vite build",
     "preview": "vite preview",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test tests/*.test.ts"
   },
   "dependencies": {
+    "@noble/hashes": "2.4.0",
     "@solidjs/router": "2.0.0-next.16",
     "@solidjs/web": "2.0.0-rc.0",
     "prismjs": "^1.30.0",

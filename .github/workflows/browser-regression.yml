@@ -1,0 +1,44 @@
+name: Browser checkpoint regression
+
+on:
+  pull_request:
+    paths:
+      - 'website/**'
+      - 'contracts/checkpoint-lock.schema.json'
+      - 'tests/contracts/**'
+      - '.github/workflows/browser-regression.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verified-browser-models:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '10'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+          cache-dependency-path: website/pnpm-lock.yaml
+      - name: Install website dependencies from lockfile
+        working-directory: website
+        run: pnpm install --frozen-lockfile
+      - name: Run browser model lifecycle and byte-integrity regressions
+        working-directory: website
+        run: pnpm test
+      - name: Typecheck website code
+        working-directory: website
+        run: pnpm check
+      - name: Build deployable browser site
+        working-directory: website
+        run: pnpm build
+      - name: Install checkpoint schema validator
+        run: python3 -m pip install --user jsonschema==4.26.0
+      - name: Check browser manifest against the shared JSON Schema
+        run: python3 -m unittest discover -s tests/contracts -p 'test_*.py' -v

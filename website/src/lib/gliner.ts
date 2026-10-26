@@ -268,7 +268,6 @@ export function ensureLocalLibraryResumeAttempted(): void {
       : { rootName: handle.name, handle, checkpointNames: [] as string[] };
     if (granted) {
       setLocalLibrary(library);
-      setPreferredSource("local");
     } else {
       setPendingLibrary(library);
     }
@@ -288,7 +287,6 @@ export async function grantPendingLibraryAccess(): Promise<LocalLibrary | null> 
   const library = await toLibrary(pending.handle);
   setLocalLibrary(library);
   setPendingLibrary(null);
-  setPreferredSource("local");
   return library;
 }
 

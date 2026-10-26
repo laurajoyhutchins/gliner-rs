@@ -647,9 +647,18 @@ impl BoundaryModel {
     /// `gliner2`'s formatted results; `start`/`end` are character (code point)
     /// offsets into `text`.
     pub fn extract(&self, text: &str, schema: &Schema, opts: &ExtractOptions) -> Result<Value> {
+        let total = crate::profiling::begin();
+        let prep = crate::profiling::begin();
         let input = self.processor.prepare(text, schema, opts.max_words)?;
+        crate::profiling::end("prepare", prep);
+        let encoder = crate::profiling::begin();
         let states = self.encode(&input)?;
-        self.extract_from_states(&input, &states, schema, opts)
+        crate::profiling::end("encoder", encoder);
+        let decode = crate::profiling::begin();
+        let value = self.extract_from_states(&input, &states, schema, opts)?;
+        crate::profiling::end("post_encoder", decode);
+        crate::profiling::end("extract_total", total);
+        Ok(value)
     }
 
     /// [`Self::extract`] for several texts against the same `schema`, encoded

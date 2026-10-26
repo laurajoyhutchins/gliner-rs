@@ -149,6 +149,7 @@ impl DebertaV2 {
         let mut hidden = self.embeddings_norm.forward(&self.word_embeddings.forward(input_ids)?)?;
         hidden = hidden.broadcast_mul(&mask.unsqueeze(2)?)?;
 
+        let position_time = crate::profiling::begin();
         let (c2p_idx, p2c_idx) = self.position_indices(t)?;
         let c2p_idx = c2p_idx.expand((b, self.num_heads, t, t))?.contiguous()?;
         let p2c_idx = p2c_idx.expand((b, self.num_heads, t, t))?.contiguous()?;
@@ -168,8 +169,10 @@ impl DebertaV2 {
         let floor = Tensor::full(min_value, (b, self.num_heads, t, t), &self.device)?
             .to_dtype(self.dtype)?;
 
+        crate::profiling::end("deberta_position_setup", position_time);
         let scale = ((self.head_dim * 3) as f64).sqrt();
         for layer in &self.layers {
+            let attention_time = crate::profiling::begin();
             let width = self.num_heads * self.head_dim;
             let qkv = layer.qkv_proj.forward(&hidden)?;
             let q = split_heads(&qkv.narrow(2, 0, width)?, self.num_heads, self.head_dim)?;
@@ -195,10 +198,13 @@ impl DebertaV2 {
             let attn_out = layer
                 .attn_norm
                 .forward(&(layer.attn_dense.forward(&context)? + &hidden)?)?;
+            crate::profiling::end("deberta_attention", attention_time);
+            let ffn_time = crate::profiling::begin();
             let inter = layer.intermediate.forward(&attn_out)?.gelu_erf()?;
             hidden = layer
                 .output_norm
                 .forward(&(layer.output_dense.forward(&inter)? + &attn_out)?)?;
+            crate::profiling::end("deberta_ffn", ffn_time);
         }
         Ok(hidden)
     }

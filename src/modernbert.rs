@@ -210,6 +210,7 @@ impl ModernBert {
         let local_mask = pad_mask.broadcast_add(&sliding_mask)?;
 
         for layer in &self.layers {
+            let attention_time = crate::profiling::begin();
             let residual = h.clone();
             let normed = match &layer.attn_norm {
                 Some(n) => n.forward(&h)?,
@@ -218,11 +219,14 @@ impl ModernBert {
             let (cos, sin, mask) = if layer.is_global { (&cos_g, &sin_g, &global_mask) } else { (&cos_l, &sin_l, &local_mask) };
             let attn_out = layer.attn.forward(&normed, cos, sin, mask)?;
             h = (residual + attn_out)?;
+            crate::profiling::end("modernbert_attention", attention_time);
+            let ffn_time = crate::profiling::begin();
 
             let residual = h.clone();
             let normed = layer.mlp_norm.forward(&h)?;
             let mlp_out = layer.mlp.forward(&normed)?;
             h = (residual + mlp_out)?;
+            crate::profiling::end("modernbert_ffn", ffn_time);
         }
         self.final_norm.forward(&h)
     }

@@ -28,6 +28,7 @@ pub mod model;
 pub mod model_path;
 pub mod modernbert;
 pub mod processor;
+pub(crate) mod profiling;
 pub mod records;
 pub mod safetensors32;
 pub mod schema;

@@ -266,6 +266,24 @@ mod tests {
     }
 
     #[test]
+    fn cached_bytes_must_match_the_independent_digest() {
+        let dir = std::env::temp_dir().join(format!(
+            "gliner-rs-lock-test-{}-{}",
+            std::process::id(),
+            NEXT_DOWNLOAD.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(&path, b"hello").unwrap();
+        let valid = verify_cached_file(&path, TEST_HASH);
+        std::fs::write(&path, b"corrupted").unwrap();
+        let invalid = verify_cached_file(&path, TEST_HASH);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(valid.is_ok());
+        assert!(invalid.unwrap_err().to_string().contains("does not match its pinned SHA-256"));
+    }
+
+    #[test]
     fn accepts_complete_pinned_manifest() {
         let lock = parse_lock(&lock_json(), &variant()).unwrap();
         assert_eq!(lock.revision, REVISION);

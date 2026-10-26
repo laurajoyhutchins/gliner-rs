@@ -44,6 +44,7 @@ serde_json = { version = "1", features = ["preserve_order"] }
 tokenizers = { version = "0.22", default-features = false, features = ["fancy-regex"] }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rustyline = { version = "18", features = ["with-file-history", "derive"], optional = true }
+sha2 = "0.10"
 ureq = "2"
 # HTTP server (src/server.rs): ntex owns the worker threads and SIGINT/SIGTERM graceful shutdown; tokio
 # supplies only the runtime-agnostic async Mutex/Semaphore used for the serial-execution queue.

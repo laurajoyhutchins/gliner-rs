@@ -181,7 +181,6 @@ export function ModelPicker(props: { models: ModelDef[]; onLoaded: (m: LoadedMod
 
       if (loadedKey()) return; // already resolved for this picker otherwise
       if (existing) {
-        setLoadedKey(existing.def.key);
         return;
       }
       const persisted = persistedState();

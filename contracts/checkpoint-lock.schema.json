@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/laurajoyhutchins/gliner-rs/blob/master/contracts/checkpoint-lock.schema.json",
+  "title": "Pinned GLiNER checkpoint lock",
+  "description": "Repository-internal contract for an immutable Hugging Face checkpoint revision and independently verified per-file SHA-256 digests. A syntactically valid lock is not itself an attestation of origin.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "repo",
+    "revision",
+    "sha256"
+  ],
+  "properties": {
+    "version": {
+      "const": 1,
+      "type": "integer"
+    },
+    "repo": {
+      "type": "string",
+      "minLength": 3,
+      "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$"
+    },
+    "revision": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{40}$"
+    },
+    "sha256": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "config.json",
+        "encoder_config/config.json",
+        "tokenizer.json",
+        "model.safetensors"
+      ],
+      "properties": {
+        "config.json": {
+          "$ref": "#/$defs/sha256"
+        },
+        "encoder_config/config.json": {
+          "$ref": "#/$defs/sha256"
+        },
+        "tokenizer.json": {
+          "$ref": "#/$defs/sha256"
+        },
+        "model.safetensors": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{64}$"
+    }
+  }
+}

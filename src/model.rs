@@ -1355,14 +1355,14 @@ fn format_struct(instance: Map<String, Value>) -> Value {
 }
 
 fn format_relation(edge: &RelationEdge, opts: &ExtractOptions) -> Value {
-    let side = |m: &(String, usize, usize)| match (opts.include_spans, opts.include_confidence) {
-        (true, true) => json!({"text": m.0, "start": m.1, "end": m.2, "confidence": if m.1 == edge.head.1 && m.2 == edge.head.2 { edge.head_score } else { edge.tail_score }}),
+    let side = |m: &(String, usize, usize), score: f32| match (opts.include_spans, opts.include_confidence) {
+        (true, true) => json!({"text": m.0, "start": m.1, "end": m.2, "confidence": score}),
         (true, false) => json!({"text": m.0, "start": m.1, "end": m.2}),
-        (false, true) => json!({"text": m.0, "confidence": if m.1 == edge.head.1 && m.2 == edge.head.2 { edge.head_score } else { edge.tail_score }}),
+        (false, true) => json!({"text": m.0, "confidence": score}),
         (false, false) => json!(m.0),
     };
     if opts.include_spans || opts.include_confidence {
-        let mut value = json!({"head": side(&edge.head), "tail": side(&edge.tail)});
+        let mut value = json!({"head": side(&edge.head, edge.head_score), "tail": side(&edge.tail, edge.tail_score)});
         if opts.include_confidence {
             value["confidence"] = json!(edge.score);
         }

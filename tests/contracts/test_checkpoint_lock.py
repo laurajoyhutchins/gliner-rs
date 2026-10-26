@@ -35,7 +35,7 @@ class CheckpointLockContractTest(unittest.TestCase):
         root = SCHEMA_PATH.parents[1]
         locks = json.loads((root / "website/src/lib/checkpoint-locks.json").read_text(encoding="utf-8"))
         declared = set(re.findall(
-            r'hfRepo:\\s*"([^"]+)"',
+            r'hfRepo:\s*"([^"]+)"',
             (root / "website/src/lib/models.ts").read_text(encoding="utf-8"),
         ))
         repos = [lock["repo"] for lock in locks]

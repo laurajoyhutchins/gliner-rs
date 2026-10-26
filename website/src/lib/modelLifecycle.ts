@@ -10,10 +10,13 @@ export class ModelLifecycle<T extends DisposableModel> {
   private generation = 0;
   private pending: AbortController | null = null;
 
-  constructor(
-    private readonly current: () => T | null,
-    private readonly publish: (model: T | null) => void,
-  ) {}
+  private readonly current: () => T | null;
+  private readonly publish: (model: T | null) => void;
+
+  constructor(current: () => T | null, publish: (model: T | null) => void) {
+    this.current = current;
+    this.publish = publish;
+  }
 
   async replace(load: (signal: AbortSignal) => Promise<T>, committed?: (model: T) => void): Promise<T> {
     this.pending?.abort();

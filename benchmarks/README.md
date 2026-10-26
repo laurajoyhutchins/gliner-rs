@@ -38,9 +38,7 @@ than treating minor per-case differences as meaningful.
 Agreement with Python proves implementation parity, not factual correctness
 of model predictions. The ten-case corpus is intentionally small. Extend it
 with labeled multilingual, regulatory, records, attributes, long-document and
-batch inputs before making broad compatibility claims. `--require-full-parity`
-fails on the confidence/metadata differences still known in relationship
-and record outputs.
+batch inputs before making broad compatibility claims. `--require-full-parity` now passes 10/10 on the pinned source and checksum-verified small checkpoint after [PR #18](https://github.com/laurajoyhutchins/gliner-rs/pull/18), independently verified by [CI run 40390839329](https://github.com/laurajoyhutchins/gliner-rs/actions/runs/40390839329). This is limited to the ten reviewed cases; it is not a claim about all models or inputs.
 
 ## Focused candidate-pool microbenchmark
 
@@ -87,10 +85,7 @@ measured 1.064x. The performance gain is modest and noisy, and some
 individual workloads regress. These figures are local evidence, not an
 independently reproduced CI performance claim or a universal speedup.
 
-A related Python parity run on the fused model retained **10/10 semantic
-matches** and **7/10 full confidence-metadata matches** versus GLiNER2 2.1.0;
-the three existing relation/record confidence-format differences were
-not introduced by this optimization.
+A related Python parity run on the fused model retained **10/10 semantic matches** and **7/10 full confidence-metadata matches** versus GLiNER2 2.1.0 at that historical pre-fix revision. The three differences were subsequently corrected in [PR #18](https://github.com/laurajoyhutchins/gliner-rs/pull/18).
 
 The fused DeBERTa QKV implementation preserves weight tensors and computes
 three attention projections through one matrix multiplication per layer.
@@ -150,3 +145,22 @@ reference speed (4% regression) on ten short cases; a flattened CPU linear
 projection rewrite produced noisy, inconsistent results. Neither is part of
 this optimization. Specialized GEMM kernels or quantization require
 separate per-hardware benchmarking and conformance checks.
+
+## Record enum-score reuse (post-parity candidate)
+
+The shared-pool explicit-span scorer evaluates schema-prefix enum choices
+against the current encoded document/query. That score is the same for each
+record instance in the **same** extraction. The record-specific choice
+ownership, source spans, and formatting must still run separately.
+
+`src/model.rs` uses a request-local cache keyed by query ID and exact
+explicit-token spans. Cache misses execute the original scorer; errors and
+nonfinite probabilities cannot enter the cache. Historical `master` after
+PR #18 is the compatible output baseline.
+
+`rust-revision-record-perf.yml` runs an AB/BA whole-model comparison with
+identical SHA-256-verified weights and an additional record-rich input corpus.
+It verifies **full JSON** equality before presenting timing summaries.
+Results must be evaluated as noisy host-specific distributions, not
+intrinsic model performance guarantees. The improvement is expected to be
+concentrated in record/enum workloads, not general NER.

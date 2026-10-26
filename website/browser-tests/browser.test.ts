@@ -37,9 +37,13 @@ let server: Server;
 let browser: Browser;
 let baseUrl = "";
 const fixture = new Map<string, string>();
+const verifiedFixtureFiles = new Map<string, string>();
 const contentType = (path: string): string => path.endsWith(".wasm") ? "application/wasm" : path.endsWith(".js") ? "text/javascript" : path.endsWith(".json") ? "application/json" : "application/octet-stream";
 
 async function fixtureFile(file: FileName, lock: Lock = checkpoint): Promise<string> {
+  const key = `${lock.revision}:${file}`;
+  const reused = verifiedFixtureFiles.get(key);
+  if (reused) return reused; // same process, exact bytes verified before publication
   const output = join(tmp, lock.repo.split("/").pop() + "_" + file.replaceAll("/", "_"));
   const expected = lock.sha256[file];
   if (!/^[a-f0-9]{64}$/.test(expected)) throw new Error(`Unpinned or invalid SHA-256 for ${file}`);
@@ -62,6 +66,7 @@ async function fixtureFile(file: FileName, lock: Lock = checkpoint): Promise<str
     if (actual !== expected) {
       throw new Error(`Pinned ${file} SHA-256 mismatch: ${actual} != ${expected}`);
     }
+    verifiedFixtureFiles.set(key, output);
     console.log(`verified fixture ${file}: ${length} bytes, SHA-256 ${actual}`);
     return output;
   } catch (error) {

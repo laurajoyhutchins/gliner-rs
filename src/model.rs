@@ -400,7 +400,7 @@ fn length_bucket_groups(lengths: &[usize]) -> Vec<Vec<usize>> {
             let size = group.len() + 1;
             let tokens = lengths[index];
             size <= 8
-                && tokens <= lengths[group[0]] + lengths[group[0]] / 4
+                && tokens <= lengths[group[0]].saturating_add(lengths[group[0]] / 4)
                 && size.saturating_mul(tokens.saturating_mul(tokens)) <= 1_000_000
         });
         if add {

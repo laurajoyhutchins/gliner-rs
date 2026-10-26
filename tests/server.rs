@@ -18,6 +18,7 @@ struct Mock {
     fail_once: AtomicBool,
     reject_relations: AtomicBool,
     extractions: AtomicUsize,
+    batch_calls: AtomicUsize,
     running: AtomicUsize,
     max_running: AtomicUsize,
     gate: Option<Gate>,
@@ -45,6 +46,11 @@ impl Extractor for Mock {
             bail!("this checkpoint only supports entities and classification");
         }
         Ok(())
+    }
+
+    fn extract_batch(&self, texts: &[&str], schema: &Schema, opts: &ExtractOptions) -> Result<Vec<Value>> {
+        self.batch_calls.fetch_add(1, Ordering::SeqCst);
+        texts.iter().map(|&text| self.extract(text, schema, opts)).collect()
     }
 
     fn extract(&self, text: &str, schema: &Schema, opts: &ExtractOptions) -> Result<Value> {
@@ -84,10 +90,14 @@ async fn server(mock: Arc<Mock>, config: ServerConfig) -> (TestServer, ServerSta
     (test::server(async move || App::new().configure(routes(s.clone()))).await, state)
 }
 
-async fn post(srv: &TestServer, content_type: &str, body: String) -> (StatusCode, Value, ClientResponse) {
-    let res = srv.post("/v1/extract").header("content-type", content_type).send_body(body).await.unwrap();
+async fn post_to(srv: &TestServer, path: &str, content_type: &str, body: String) -> (StatusCode, Value, ClientResponse) {
+    let res = srv.post(path).header("content-type", content_type).send_body(body).await.unwrap();
     let bytes = res.body().limit(usize::MAX).await.unwrap();
     (res.status(), serde_json::from_slice(&bytes).unwrap_or(Value::Null), res)
+}
+
+async fn post(srv: &TestServer, content_type: &str, body: String) -> (StatusCode, Value, ClientResponse) {
+    post_to(srv, "/v1/extract", content_type, body).await
 }
 
 #[ntex::test]
@@ -101,6 +111,86 @@ async fn extract_builds_the_schema_from_cli_syntax_and_applies_options() {
         v["result"],
         json!({"text": "Alice works for Acme in Paris.", "entities": 3, "classifications": 1, "threshold": 0.75, "spans": true, "confidence": false})
     );
+}
+
+
+#[ntex::test]
+async fn batch_route_uses_one_shared_schema_and_returns_ordered_outputs() {
+    let mock = Arc::new(Mock::default());
+    let (srv, state) = server(mock.clone(), ServerConfig::default()).await;
+    let mut payload = body();
+    payload.as_object_mut().unwrap().remove("text");
+    payload["texts"] = json!(["Alice works at Acme.", "Bob works at Contoso.", "电机运行在480伏。"]);
+    payload["confidence"] = json!(true);
+    let (status, result, _) = post_to(&srv, "/v1/extract/batch", "application/json", payload.to_string()).await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(result["model"], "multi");
+    assert!(result.get("result").is_none(), "batch shape must be unambiguous");
+    assert_eq!(result["results"].as_array().unwrap().len(), 3);
+    assert_eq!(result["results"][0]["text"], "Alice works at Acme.");
+    assert_eq!(result["results"][1]["text"], "Bob works at Contoso.");
+    assert_eq!(result["results"][2]["text"], "电机运行在480伏。");
+    assert_eq!(result["results"][0]["entities"], 3);
+    assert_eq!(result["results"][2]["threshold"], 0.75);
+    assert_eq!(result["results"][1]["confidence"], true);
+    assert_eq!(mock.batch_calls.load(Ordering::SeqCst), 1, "one batch dispatch, not three independent forwards");
+    assert_eq!(mock.extractions.load(Ordering::SeqCst), 3);
+    assert_eq!(state.admission_available_slots(), ServerConfig::default().max_queued + 1);
+}
+
+#[ntex::test]
+async fn invalid_batch_rejected_before_model_or_queue_admission() {
+    let mock = Arc::new(Mock::default());
+    let (srv, state) = server(mock.clone(), ServerConfig::default()).await;
+    let common = |texts: Value| json!({"texts": texts, "entities": ["person"]}).to_string();
+    let cases = [
+        ("texts", common(json!([]))),
+        ("texts", common(json!(["ok", " ", "third"]))),
+        ("texts", common(json!(vec!["ok"; 65]))),
+        ("texts", common(json!(["x".repeat(16*1024+1)]))),
+        ("texts", common(json!(vec!["x".repeat(1500); 50]))),
+        ("text", json!({"text": "invalid", "texts": ["ok"], "entities": ["person"]}).to_string()),
+        ("texts", json!({"entities": ["person"]}).to_string()),
+        ("schema", json!({"texts": ["valid"], "entities": []}).to_string()),
+        ("model", json!({"model": "not-loaded", "texts": ["valid"], "entities": ["person"]}).to_string()),
+    ];
+    for (param, body) in cases {
+        let (status, response, _) = post_to(&srv, "/v1/extract/batch", "application/json", body).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{param}: {response}");
+        assert_eq!(response["error"]["param"], param, "{response}");
+    }
+    let (status, response, _) = post(&srv, "application/json", common(json!(["one"]))).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{response}");
+    assert_eq!(response["error"]["param"], "texts");
+    assert_eq!(mock.extractions.load(Ordering::SeqCst), 0);
+    assert_eq!(mock.batch_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(state.admission_available_slots(), ServerConfig::default().max_queued + 1);
+}
+
+#[ntex::test]
+async fn batch_consumes_single_admission_slot_and_cannot_overlap_single_forward() {
+    let mock = Arc::new(Mock { gate: Some(Gate::default()), ..Default::default() });
+    let (srv, state) = server(mock.clone(), ServerConfig { max_queued: 0 }).await;
+    let srv = Arc::new(srv);
+    let waiting = {
+        let srv = srv.clone();
+        ntex::rt::spawn(async move {
+            post_to(&srv, "/v1/extract/batch", "application/json",
+                json!({"texts": ["first", "second"], "entities": ["person"]}).to_string()).await.0
+        })
+    };
+    while mock.running.load(Ordering::SeqCst) == 0 {
+        ntex::time::sleep(ntex::time::Millis(5)).await;
+    }
+    assert_eq!(state.admission_available_slots(), 0);
+    let (status, response, res) = post(&srv, "application/json", body().to_string()).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{response}");
+    assert_eq!(res.header("retry-after").unwrap(), "1");
+    mock.gate.as_ref().unwrap().open();
+    assert_eq!(waiting.await.unwrap(), StatusCode::OK);
+    assert_eq!(mock.batch_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(mock.extractions.load(Ordering::SeqCst), 2);
+    assert_eq!(mock.max_running.load(Ordering::SeqCst), 1);
 }
 
 #[ntex::test]

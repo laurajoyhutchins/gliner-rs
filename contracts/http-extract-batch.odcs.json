@@ -1,0 +1,101 @@
+{
+  "apiVersion": "v3.1.0",
+  "kind": "DataContract",
+  "id": "glinerrs_http_batch_v1",
+  "version": "1.0.0",
+  "name": "GLiNER adaptive HTTP extraction batch exchange",
+  "status": "active",
+  "description": {
+    "purpose": "Machine-readable contract for consumers of the GLiNER HTTP adaptive batch inference exchange.",
+    "usage": "POST /v1/extract/batch shares one schema and options across texts and returns one ordered result per text. JSON Schema is the executable shape/validation authority.",
+    "limitations": "Inference probabilities are model outputs, not verified source facts. HTTP validates aggregate UTF-8 sizes and supported checkpoint schema separately."
+  },
+  "schema": [
+    {
+      "name": "BatchExtractRequest",
+      "logicalType": "object",
+      "description": "Request JSON; authoritative constraints in http-extract-batch.schema.json.",
+      "properties": [
+        {
+          "name": "texts",
+          "logicalType": "array",
+          "required": true,
+          "description": "1 to 64 nonempty document strings, max 16 KiB each and 64 KiB combined UTF-8."
+        },
+        {
+          "name": "model",
+          "logicalType": "string",
+          "required": false
+        },
+        {
+          "name": "entities",
+          "logicalType": "array",
+          "required": false
+        },
+        {
+          "name": "relations",
+          "logicalType": "array",
+          "required": false
+        },
+        {
+          "name": "json",
+          "logicalType": "array",
+          "required": false
+        },
+        {
+          "name": "classify",
+          "logicalType": "array",
+          "required": false
+        },
+        {
+          "name": "threshold",
+          "logicalType": "number",
+          "required": false
+        },
+        {
+          "name": "spans",
+          "logicalType": "boolean",
+          "required": false
+        },
+        {
+          "name": "confidence",
+          "logicalType": "boolean",
+          "required": false
+        },
+        {
+          "name": "overlap",
+          "logicalType": "string",
+          "required": false
+        },
+        {
+          "name": "max_words",
+          "logicalType": "integer",
+          "required": false
+        },
+        {
+          "name": "legacy_structures",
+          "logicalType": "boolean",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "BatchExtractResponse",
+      "logicalType": "object",
+      "description": "Output preserves input order and model-specific structures.",
+      "properties": [
+        {
+          "name": "model",
+          "logicalType": "string",
+          "required": true
+        },
+        {
+          "name": "results",
+          "logicalType": "array",
+          "required": true,
+          "description": "One full extraction result per corresponding input document."
+        }
+      ]
+    }
+  ]
+}

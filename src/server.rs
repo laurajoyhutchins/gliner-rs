@@ -13,10 +13,15 @@
 //!
 //!   At least one of `entities`, `relations`, `json`, `classify` is required. The answer is
 //!   `{"model": .., "result": <what the CLI prints>}`.
+//! * `POST /v1/extract/batch`: one shared schema and `"texts": ["...", "..."]`.
+//!   Returns `{"model": .., "results": [<one full result per input>]}` in caller order.
+//!   The batch uses `GLiNER2::extract_batch` and its adaptive length bucketing.
 //! * `GET /health`: `{"status":"ready","model":..}`, no inference.
 //!
 //! Requests run strictly one at a time (one forward in flight) behind a bounded admission queue: a
 //! request that finds `1 + max_queued` requests already admitted gets `429` with `Retry-After: 1`.
+//! A batch is one admitted request, not one admission per document. Limits are
+//! 64 documents, 16 KiB per document, 64 KiB total text, and 1 MiB HTTP body.
 //! Bad input is `422` with `{"error": {message, type: "invalid_request_error", code: 422, param}}`; a
 //! failed forward is `500 {"detail":"internal error"}` (the cause goes to stderr).
 //!
@@ -39,6 +44,13 @@ use tokio::sync::{Mutex, Semaphore};
 
 /// Request-body cap.
 pub const MAX_BODY_BYTES: usize = 1_048_576;
+/// Maximum documents admitted as one scoring-queue work item.
+pub const MAX_BATCH_DOCUMENTS: usize = 64;
+/// Bounded aggregate UTF-8 input for batch requests; a request cannot monopolize
+/// CPU and heap by combining many individually valid documents.
+pub const MAX_BATCH_TEXT_BYTES: usize = 64 * 1024;
+/// Maximum UTF-8 bytes per batch document.
+pub const MAX_BATCH_DOCUMENT_BYTES: usize = 16 * 1024;
 /// How much of a rejected (oversized) body is read and discarded before replying.
 const DRAIN_LIMIT: usize = 16 * MAX_BODY_BYTES;
 
@@ -48,6 +60,11 @@ pub trait Extractor: Send + Sync + 'static {
     fn validate(&self, schema: &Schema) -> Result<()>;
     /// One extraction (synchronous; runs on the blocking pool).
     fn extract(&self, text: &str, schema: &Schema, opts: &ExtractOptions) -> Result<Value>;
+    /// Implementors may override to use the model's batched encoder. The
+    /// default preserves source compatibility for existing custom extractors.
+    fn extract_batch(&self, texts: &[&str], schema: &Schema, opts: &ExtractOptions) -> Result<Vec<Value>> {
+        texts.iter().map(|&text| self.extract(text, schema, opts)).collect()
+    }
 }
 
 impl Extractor for GLiNER2 {
@@ -60,6 +77,10 @@ impl Extractor for GLiNER2 {
 
     fn extract(&self, text: &str, schema: &Schema, opts: &ExtractOptions) -> Result<Value> {
         GLiNER2::extract(self, text, schema, opts)
+    }
+
+    fn extract_batch(&self, texts: &[&str], schema: &Schema, opts: &ExtractOptions) -> Result<Vec<Value>> {
+        GLiNER2::extract_batch(self, texts, schema, opts)
     }
 }
 
@@ -111,16 +132,34 @@ impl ServerState {
         self.0.admission.available_permits()
     }
 
-    /// Queue and run one extraction.
+    /// Queue and run a single extraction.
     pub async fn execute(&self, text: String, schema: Schema, opts: ExtractOptions) -> Result<Value, ExecError> {
+        self.execute_work(ExtractionWork::Single(text), schema, opts).await
+    }
+
+    /// Submit one atomic batch for inference. It occupies one queue slot and
+    /// holds the existing inference lock for the *entire* batched forward.
+    pub async fn execute_batch(&self, texts: Vec<String>, schema: Schema, opts: ExtractOptions) -> Result<Vec<Value>, ExecError> {
+        validate_batch_texts(&texts)?;
+        let value = self.execute_work(ExtractionWork::Batch(texts), schema, opts).await?;
+        serde_json::from_value(value).map_err(|e| ExecError::Internal(format!("batch result encoding failed: {e}")))
+    }
+
+    async fn execute_work(&self, work: ExtractionWork, schema: Schema, opts: ExtractOptions) -> Result<Value, ExecError> {
         self.0.extractor.validate(&schema).map_err(|e| ExecError::Invalid { param: "schema", message: e.to_string() })?;
         let permit = self.0.admission.clone().try_acquire_owned().map_err(|_| ExecError::QueueFull)?;
         let lock = self.0.model_lock.clone().lock_owned().await;
         let extractor = Arc::clone(&self.0.extractor);
-        // The permit and lock move into the blocking closure, so a client disconnect (dropping this
-        // future) can never let a second forward overlap one that is still running.
+        // The permit and lock move into the blocking closure, so a client
+        // disconnect never releases admission while a forward is still running.
         ntex::rt::spawn_blocking(move || {
-            let result = extractor.extract(&text, &schema, &opts);
+            let result = match work {
+                ExtractionWork::Single(text) => extractor.extract(&text, &schema, &opts),
+                ExtractionWork::Batch(texts) => {
+                    let borrowed: Vec<&str> = texts.iter().map(String::as_str).collect();
+                    extractor.extract_batch(&borrowed, &schema, &opts).map(|results| json!(results))
+                }
+            };
             drop(lock);
             drop(permit);
             result
@@ -131,13 +170,55 @@ impl ServerState {
     }
 }
 
-/// The JSON body of `POST /v1/extract`.
+/// Work is admitted and executed exactly once, even if a client disconnects.
+enum ExtractionWork {
+    Single(String),
+    Batch(Vec<String>),
+}
+
+/// Fail invalid batch work before acquiring queue capacity or starting the model.
+fn validate_batch_texts(texts: &[String]) -> Result<(), ExecError> {
+    if texts.is_empty() || texts.len() > MAX_BATCH_DOCUMENTS {
+        return Err(ExecError::Invalid {
+            param: "texts",
+            message: format!("texts must contain between 1 and {MAX_BATCH_DOCUMENTS} documents"),
+        });
+    }
+    let mut bytes = 0usize;
+    for (index, text) in texts.iter().enumerate() {
+        if text.trim().is_empty() {
+            return Err(ExecError::Invalid {
+                param: "texts",
+                message: format!("texts[{index}] must not be empty"),
+            });
+        }
+        if text.len() > MAX_BATCH_DOCUMENT_BYTES {
+            return Err(ExecError::Invalid {
+                param: "texts",
+                message: format!("texts[{index}] exceeds the {MAX_BATCH_DOCUMENT_BYTES}-byte document limit"),
+            });
+        }
+        bytes = bytes.saturating_add(text.len());
+        if bytes > MAX_BATCH_TEXT_BYTES {
+            return Err(ExecError::Invalid {
+                param: "texts",
+                message: format!("combined texts exceed the {MAX_BATCH_TEXT_BYTES}-byte limit"),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Shared schema/options for the single- and batch-extraction JSON bodies.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ExtractRequest {
     #[serde(default)]
     model: Option<String>,
-    text: String,
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    texts: Option<Vec<String>>,
     #[serde(default)]
     entities: Vec<String>,
     #[serde(default)]
@@ -213,6 +294,14 @@ async fn read_body(req: &HttpRequest, mut payload: Payload) -> Option<Vec<u8>> {
 }
 
 async fn extract(state: State<ServerState>, req: HttpRequest, payload: Payload) -> HttpResponse {
+    extract_request(state, req, payload, false).await
+}
+
+async fn extract_batch(state: State<ServerState>, req: HttpRequest, payload: Payload) -> HttpResponse {
+    extract_request(state, req, payload, true).await
+}
+
+async fn extract_request(state: State<ServerState>, req: HttpRequest, payload: Payload, batch_endpoint: bool) -> HttpResponse {
     let Some(bytes) = read_body(&req, payload).await else {
         return invalid("body", "request body exceeds the 1 MiB limit");
     };
@@ -229,9 +318,22 @@ async fn extract(state: State<ServerState>, req: HttpRequest, payload: Payload) 
     if body.model.as_deref().is_some_and(|m| m != state.model_name()) {
         return invalid("model", format!("Loaded model is '{}'", state.model_name()));
     }
-    if body.text.trim().is_empty() {
-        return invalid("text", "text must not be empty");
-    }
+    let work = match (batch_endpoint, body.text, body.texts) {
+        (false, Some(text), None) => {
+            if text.trim().is_empty() { return invalid("text", "text must not be empty"); }
+            ExtractionWork::Single(text)
+        }
+        (false, _, Some(_)) => return invalid("texts", "use /v1/extract/batch to submit multiple texts"),
+        (false, None, None) => return invalid("text", "text is required"),
+        (true, None, Some(texts)) => {
+            if let Err(ExecError::Invalid { param, message }) = validate_batch_texts(&texts) {
+                return invalid(param, message);
+            }
+            ExtractionWork::Batch(texts)
+        }
+        (true, Some(_), _) => return invalid("text", "batch endpoint requires texts, not text"),
+        (true, None, None) => return invalid("texts", "texts is required"),
+    };
     if !(0.0..=1.0).contains(&body.threshold) {
         return invalid("threshold", "threshold must be between 0 and 1");
     }
@@ -256,7 +358,8 @@ async fn extract(state: State<ServerState>, req: HttpRequest, payload: Payload) 
         overlap_policy,
         max_words: body.max_words,
     };
-    match state.execute(body.text, schema, opts).await {
+    match state.execute_work(work, schema, opts).await {
+        Ok(result) if batch_endpoint => json_response(StatusCode::OK, false, json!({"model": state.model_name(), "results": result})),
         Ok(result) => json_response(StatusCode::OK, false, json!({"model": state.model_name(), "result": result})),
         Err(ExecError::Invalid { param, message }) => invalid(param, message),
         Err(ExecError::QueueFull) => json_response(StatusCode::TOO_MANY_REQUESTS, true, json!({"detail": "Scoring queue is full"})),
@@ -274,7 +377,10 @@ async fn health(state: State<ServerState>) -> HttpResponse {
 /// Register the routes (and shared state) on an app: `App::new().configure(routes(state))`.
 pub fn routes(state: ServerState) -> impl FnOnce(&mut ServiceConfig) {
     move |cfg| {
-        cfg.state(state).route("/v1/extract", web::post().to(extract)).route("/health", web::get().to(health));
+        cfg.state(state)
+            .route("/v1/extract", web::post().to(extract))
+            .route("/v1/extract/batch", web::post().to(extract_batch))
+            .route("/health", web::get().to(health));
     }
 }
 

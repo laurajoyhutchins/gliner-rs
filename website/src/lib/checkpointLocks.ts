@@ -21,7 +21,3 @@ export function checkpointLock(repo: string): CheckpointLock {
   if (!lock) throw new Error(`No pinned checkpoint lock for ${repo}; download blocked`);
   return lock;
 }
-
-export function pinnedCheckpointUrl(lock: CheckpointLock, file: CheckpointFile): string {
-  return `https://huggingface.co/${lock.repo}/resolve/${lock.revision}/${file}`;
-}

@@ -72,8 +72,8 @@ function build(generated: string): void {
   const result = spawnSync(
     "wasm-pack",
     [
-      "build", "--out-dir", generated, "--target", "web", "--no-gitignore",
-      "--release", "--no-opt", "--", "--locked", "--no-default-features",
+      "build", "--target", "web", "--release", "--no-opt",
+      "--out-dir", generated, "--", "--locked", "--no-default-features",
     ],
     {
       cwd: root,

@@ -1801,3 +1801,66 @@ mod in_memory_safetensors_tests {
         assert!(in_memory_var_builder(&bytes, &Device::Cpu, DType::F32).is_err());
     }
 }
+
+#[cfg(test)]
+mod confidence_output_contract_tests {
+    use super::*;
+
+    #[test]
+    fn relation_confidence_distinguishes_arguments_and_edge() {
+        let edge = RelationEdge {
+            score: 0.63,
+            head: ("Alice".into(), 0, 5),
+            tail: ("Acme".into(), 15, 19),
+            head_score: 0.97,
+            tail_score: 0.82,
+        };
+        let detailed = ExtractOptions {
+            include_confidence: true,
+            include_spans: true,
+            ..Default::default()
+        };
+        let value = format_relation(&edge, &detailed);
+        assert_eq!(value["confidence"], json!(0.63));
+        assert_eq!(value["head"]["confidence"], json!(0.97));
+        assert_eq!(value["tail"]["confidence"], json!(0.82));
+        assert_eq!(value["head"]["start"], 0);
+        assert_eq!(value["tail"]["end"], 19);
+
+        let no_offsets = ExtractOptions { include_spans: false, ..detailed.clone() };
+        let value = format_relation(&edge, &no_offsets);
+        assert!(value["head"].get("start").is_none());
+        assert_eq!(value["head"]["confidence"], json!(0.97));
+
+        let plain = ExtractOptions {
+            include_confidence: false,
+            include_spans: false,
+            ..Default::default()
+        };
+        assert_eq!(format_relation(&edge, &plain), json!(["Alice", "Acme"]));
+        let spans_only = ExtractOptions { include_spans: true, ..plain };
+        let value = format_relation(&edge, &spans_only);
+        assert!(value.get("confidence").is_none());
+        assert!(value["head"].get("confidence").is_none());
+        assert_eq!(value["head"]["start"], 0);
+    }
+
+    #[test]
+    fn relation_endpoints_with_identical_offsets_keep_distinct_confidences() {
+        let edge = RelationEdge {
+            score: 0.5,
+            head: ("self".into(), 0, 4),
+            tail: ("self".into(), 0, 4),
+            head_score: 0.91,
+            tail_score: 0.87,
+        };
+        let opts = ExtractOptions {
+            include_confidence: true,
+            include_spans: true,
+            ..Default::default()
+        };
+        let value = format_relation(&edge, &opts);
+        assert_eq!(value["head"]["confidence"], json!(0.91));
+        assert_eq!(value["tail"]["confidence"], json!(0.87));
+    }
+}

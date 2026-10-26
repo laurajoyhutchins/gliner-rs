@@ -682,16 +682,25 @@ impl BoundaryHead {
 
     /// `text`: `[n, H]` word states (n >= 1), `query`: `[Q, H]` (Q >= 1).
     pub fn forward(&self, text: &Tensor, query: &Tensor) -> Result<BoundaryForward> {
+        let total = crate::profiling::begin();
+        let stage = crate::profiling::begin();
         let boundary = self.boundary_encoder.forward(text)?;
+        crate::profiling::end("boundary_encode", stage);
+        let stage = crate::profiling::begin();
         let marginals = self.query_head.forward(&boundary, text, query)?;
+        crate::profiling::end("boundary_marginals", stage);
+        let stage = crate::profiling::begin();
         let pooled = self.pool.build(&boundary, &marginals, &[])?;
+        crate::profiling::end("boundary_pool", stage);
         let q = marginals.start.len();
 
+        let stage = crate::profiling::begin();
         let learned = if pooled.is_empty() {
             Vec::new()
         } else {
             self.scorer.forward(&boundary, text, query, &pooled)?
         };
+        crate::profiling::end("boundary_shared_score", stage);
         let mut pair_logits = vec![Vec::with_capacity(pooled.len()); q];
         for (ci, cand) in pooled.iter().enumerate() {
             let (s, e) = (cand.start, cand.end);
@@ -708,6 +717,7 @@ impl BoundaryHead {
             Some(proj) => Some(proj.forward(query)?.squeeze(1)?.to_dtype(DType::F32)?.to_vec1::<f32>()?),
             None => None,
         };
+        crate::profiling::end("boundary_total", total);
         Ok(BoundaryForward {
             scores: CandidateScores {
                 spans: pooled.iter().map(|c| (c.start, c.end)).collect(),
@@ -768,8 +778,10 @@ impl BoundaryHead {
             )));
         }
 
+        let stage = crate::profiling::begin();
         let pooled = self.pool.build(&fwd.boundary, &fwd.marginals, spans)?;
         let learned = self.scorer.forward(&fwd.boundary, text, query, &pooled)?;
+        crate::profiling::end("explicit_shared_score", stage);
         spans.iter().map(|&(start, end)| {
             let i = pooled.iter().position(|cand| (cand.start, cand.end) == (start, end))
                 .ok_or_else(|| candle_core::Error::Msg(format!(

@@ -68,7 +68,11 @@ export function ModelPicker(props: { models: ModelDef[]; onLoaded: (m: LoadedMod
   const [busy, setBusy] = createSignal(false);
   const [progress, setProgress] = createSignal<DownloadProgress | null>(null);
   const [error, setError] = createSignal<string | null>(null);
-  const [loadedKey, setLoadedKey] = createSignal<string | null>(null);
+  // One shared authority across demo tabs: no per-picker stale Loaded badge.
+  const loadedKey = () => {
+    const active = currentModel();
+    return active && props.models.some((model) => model.hfRepo === active.def.hfRepo) ? active.def.key : null;
+  };
   const autoAttempted = new Set<string>();
 
   const localMatches = createMemo(() => {
@@ -83,7 +87,6 @@ export function ModelPicker(props: { models: ModelDef[]; onLoaded: (m: LoadedMod
     try {
       const def = selected();
       const result = await selectModel(def, setProgress);
-      setLoadedKey(def.key);
       props.onLoaded(result);
     } catch (e) {
       if (!(e instanceof DOMException && e.name === "AbortError")) setError(e instanceof Error ? e.message : String(e));
@@ -98,7 +101,6 @@ export function ModelPicker(props: { models: ModelDef[]; onLoaded: (m: LoadedMod
     setProgress(null);
     try {
       const result = await selectLocalModel(def, setProgress);
-      setLoadedKey(def.key);
       props.onLoaded(result);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));

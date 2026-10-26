@@ -27,3 +27,26 @@ Stage hierarchy:
 Never add nested stages together as though they were disjoint. The
 independent whole-model benchmark remains the admission boundary for
 performance changes, and Python/Rust full parity remains the correctness gate.
+
+## First measured baseline: pinned GLiNER2.5-small
+
+Source: [CI 40394924950](https://github.com/laurajoyhutchins/gliner-rs/actions/runs/40394924950).
+Source was compiled from exact commit `ad83553f6be42a6f78911ae5fc6e5fcc10f1411d`.
+Weights were verified by SHA-256 `4ee982787ace270d4bf15dbcb28ced38e0aa201372347114ceedd6336055de2b`.
+Ubuntu 22.04 GitHub runner, two inference threads, six samples per case after two warmups.
+The canonical stage JSON and raw logs are available as the workflow artifact.
+
+On the ten-case general suite, median encoder-time share across cases was
+**94.4%** (range 85.1–98.9%). The median initial boundary-head share was
+**4.5%**. Approximate median time shares from repeated measured DeBERTa
+layers were **56.8% feed-forward** and **37.3% attention**. Each percentage
+is a median of per-case fractions, not a decomposition that must sum to 100%.
+
+Per-case boundary candidate-pool selection took approximately **0.07–0.22 ms**
+on the general suite, reaching **0.30 ms** in the longest record case;
+the encoder took tens of milliseconds. Further work should prioritize the
+DeBERTa CPU linear/activation backend, not pooled candidate top-k.
+
+This is *attribution*, not evidence of a production speedup. Candidate
+changes still require a controlled A/B benchmark with complete output parity,
+the pinned Python reference, and independent browser checks where applicable.

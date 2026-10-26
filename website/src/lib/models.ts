@@ -1,7 +1,7 @@
 /** GLiNER2 checkpoints the browser demos can download from Hugging Face,
  * mirroring the `--model-variant` choices the four CLI binaries expose. */
 
-export const CHECKPOINT_FILES = ["config.json", "encoder_config/config.json", "tokenizer.json", "model.safetensors"] as const;
+export { CHECKPOINT_FILES } from "./checkpointLocks";
 
 export interface ModelDef {
   key: string;
@@ -81,10 +81,6 @@ export const GUARDRAIL_MODELS: ModelDef[] = [
     description: "Combined guardrails + PII checkpoint.",
   },
 ];
-
-export function hfFileUrl(repo: string, file: string): string {
-  return `https://huggingface.co/${repo}/resolve/main/${file}`;
-}
 
 /** The default PII taxonomy `gliner-pii` uses. */
 export const PII_DEFAULT_LABELS = [

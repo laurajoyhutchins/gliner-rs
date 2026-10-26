@@ -5,12 +5,13 @@
   "type": "module",
   "description": "The gliner-rs marketing and documentation site.",
   "scripts": {
-    "build:wasm": "cd .. && wasm-pack build --target web --release --out-dir website/src/wasm-pkg && rm -f website/src/wasm-pkg/.gitignore website/src/wasm-pkg/LICENSE website/src/wasm-pkg/README.md",
+    "build:wasm": "node --experimental-strip-types scripts/wasm-artifacts.ts --write",
     "dev": "node scripts/check-wasm.mjs && vite",
     "build": "node scripts/check-wasm.mjs && tsc --noEmit && vite build",
     "preview": "vite preview",
     "check": "tsc --noEmit",
-    "test": "node --experimental-strip-types --test tests/*.test.ts"
+    "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "build:wasm:check": "node --experimental-strip-types scripts/wasm-artifacts.ts --check"
   },
   "dependencies": {
     "@noble/hashes": "2.4.0",

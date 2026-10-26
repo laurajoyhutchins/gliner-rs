@@ -8,7 +8,8 @@ pnpm install
 pnpm dev       # http://127.0.0.1:5275
 pnpm build     # → dist/
 pnpm check     # types only
-pnpm build:wasm  # regenerate src/wasm-pkg/ (needs Rust + wasm-pack)
+pnpm build:wasm        # rebuild committed browser package (pinned Rust + wasm-pack)
+pnpm build:wasm:check  # fresh isolated build, byte-for-byte drift verification
 ```
 
 ## The wasm package is committed
@@ -20,8 +21,19 @@ environment has Node and nothing else, and asking it for a Rust toolchain would
 mean installing rustup and compiling candle on every deploy.
 
 So `pnpm build` never runs `wasm-pack`; it only checks the package is there.
-After changing anything under `../src/`, run `pnpm build:wasm` and commit the
-result, or the site keeps serving the previous build of the crate.
+A Rust change can no longer pass browser CI with a stale binary. The browser
+regression job always rebuilds the crate using `../rust-toolchain.toml` and
+`wasm-pack-version`, with `Cargo.lock` enforced, then compares all five
+committed browser artifacts byte-for-byte against a fresh isolated build.
+`--no-opt` disables the floating wasm-opt/Binaryen tool; Rust release
+optimization still applies. Run `pnpm build:wasm` and commit the resulting
+`src/wasm-pkg/` files whenever the generated output changes. The dedicated
+`automation/wasm-artifact-sync` branch also has a narrowly scoped trusted
+push workflow that commits rebuilt artifacts. Pull-request verification is
+read-only and never updates baselines automatically.
+
+This gate proves source-to-artifact consistency, **not** real browser execution
+or checkpoint inference. Those require independent browser runtime tests.
 
 ## The version is not copied here
 

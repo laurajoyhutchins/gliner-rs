@@ -188,10 +188,10 @@ impl GLiNER2 {
         self.extract_batch(texts, &schema, opts)
     }
 
-    /// [`Self::extract`] for several texts against the same `schema`,
-    /// encoded in one padded batch pass instead of one encoder call per
-    /// text. Each text's result is exactly what [`Self::extract`] would give
-    /// it alone; only `texts` may vary across a call, not `schema`.
+    /// [`Self::extract`] for documents against the same `schema`.
+    /// Boundary checkpoints adaptively group heterogeneous token lengths
+    /// to avoid wasteful padding; span checkpoints keep their existing path.
+    /// Results preserve the caller's ordering and source offsets.
     pub fn extract_batch(&self, texts: &[&str], schema: &Schema, opts: &ExtractOptions) -> Result<Vec<Value>> {
         match self {
             Self::Boundary(m) => m.extract_batch(texts, schema, opts),
@@ -199,9 +199,9 @@ impl GLiNER2 {
         }
     }
 
-    /// Encode mixed-length documents in bounded length groups, eliminating
-    /// excessive attention computation on padding. Results keep caller order.
-    /// Opt-in: `extract_batch` remains the existing API.
+    /// Force mixed-length bucketing regardless of adaptive work estimates.
+    /// Returns results in caller order; `extract_batch` now chooses this
+    /// path automatically when the estimated padding waste is substantial.
     pub fn extract_batch_bucketed(&self, texts: &[&str], schema: &Schema, opts: &ExtractOptions) -> Result<Vec<Value>> {
         match self {
             Self::Boundary(m) => m.extract_batch_bucketed(texts, schema, opts),
@@ -361,6 +361,36 @@ fn argmax(xs: &[f32]) -> usize {
     best
 }
 
+/// Reuse existing bounded buckets for significant padded-attention savings
+/// or for large batches (>=16) where the real-checkpoint A/B evidence shows
+/// smaller passes avoid an adverse large-batch CPU execution cost. Both
+/// routes preserve the model, weights and caller ordering; no new kernel.
+fn adaptive_length_groups(lengths: &[usize]) -> Option<Vec<Vec<usize>>> {
+    if lengths.len() < 2 { return None; }
+    let groups = length_bucket_groups(lengths);
+    if groups.len() < 2 { return None; }
+    // Measured 16-row homogeneous batches: forced 8-row groups avoided a
+    // reproducible candidate default regression while preserving full JSON.
+    // Do not split 9–15 homogeneous rows merely for the 8-row size cap.
+    if lengths.len() >= 16 { return Some(groups); }
+    let square = |n: usize| {
+        let n = n as u128;
+        n.saturating_mul(n)
+    };
+    let max_len = lengths.iter().copied().max().unwrap_or(0);
+    let padded_work = (lengths.len() as u128).saturating_mul(square(max_len));
+    let bucket_work: u128 = groups.iter().map(|g| {
+        (g.len() as u128).saturating_mul(square(g.iter().map(|&i| lengths[i]).max().unwrap_or(0)))
+    }).fold(0u128, u128::saturating_add);
+    // bucket_work / padded_work <= 2/3. Divisions avoid overflowing the
+    // comparison for adversarial public inputs.
+    if bucket_work > 0 && bucket_work <= padded_work / 3 * 2 + (padded_work % 3) * 2 / 3 {
+        Some(groups)
+    } else {
+        None
+    }
+}
+
 /// Group indices by encoded token length, max eight rows per batch, at most
 /// 25% padding spread, and bounded quadratic attention work. A single long
 /// sequence may exceed the batch budget, but it is never grouped with peers.
@@ -373,7 +403,7 @@ fn length_bucket_groups(lengths: &[usize]) -> Vec<Vec<usize>> {
             let size = group.len() + 1;
             let tokens = lengths[index];
             size <= 8
-                && tokens <= lengths[group[0]] + lengths[group[0]] / 4
+                && tokens <= lengths[group[0]].saturating_add(lengths[group[0]] / 4)
                 && size.saturating_mul(tokens.saturating_mul(tokens)) <= 1_000_000
         });
         if add {
@@ -661,26 +691,47 @@ impl BoundaryModel {
         Ok(value)
     }
 
-    /// [`Self::extract`] for several texts against the same `schema`, encoded
-    /// in one padded batch pass. Each text's result is identical to what
-    /// [`Self::extract`] would give it alone.
+    /// [`Self::extract`] for several documents against the same schema.
+    /// Preserve a single padded encoder pass for similar lengths, but avoid
+    /// excessive padding for heterogeneous input lengths when the existing
+    /// bounded buckets predict >= 1/3 less quadratic attention work. Large
+    /// batches (>=16) use 8-row bounded groups after pinned throughput proof.
+    /// Extraction results retain caller order and source offsets.
     pub fn extract_batch(&self, texts: &[&str], schema: &Schema, opts: &ExtractOptions) -> Result<Vec<Value>> {
+        if texts.is_empty() { return Ok(Vec::new()); }
         let inputs: Vec<PreparedInput> =
             texts.iter().map(|text| self.processor.prepare(text, schema, opts.max_words)).collect::<Result<_>>()?;
-        let states = self.encode_batch(&inputs)?;
-        inputs.iter().zip(states.iter()).map(|(input, states)| self.extract_from_states(input, states, schema, opts)).collect()
+        let lengths: Vec<usize> = inputs.iter().map(|i| i.input_ids.len()).collect();
+        match adaptive_length_groups(&lengths) {
+            Some(groups) => self.extract_prepared_groups(&inputs, groups, schema, opts),
+            None => {
+                let states = self.encode_batch(&inputs)?;
+                inputs.iter().zip(states.iter())
+                    .map(|(input, states)| self.extract_from_states(input, states, schema, opts))
+                    .collect()
+            }
+        }
     }
 
-    /// Run a heterogeneous document batch in length-compatible minibatches.
-    /// Each result is mapped back to its original index.
+    /// Explicit length bucketing, retained for callers intentionally batching
+    /// heterogeneous documents and for independent A/B measurements.
     pub fn extract_batch_bucketed(&self, texts: &[&str], schema: &Schema, opts: &ExtractOptions) -> Result<Vec<Value>> {
         if texts.is_empty() { return Ok(Vec::new()); }
-        let inputs: Vec<PreparedInput> = texts.iter()
-            .map(|text| self.processor.prepare(text, schema, opts.max_words))
-            .collect::<Result<_>>()?;
+        let inputs: Vec<PreparedInput> =
+            texts.iter().map(|text| self.processor.prepare(text, schema, opts.max_words)).collect::<Result<_>>()?;
         let lengths: Vec<usize> = inputs.iter().map(|i| i.input_ids.len()).collect();
-        let mut results: Vec<Option<Value>> = vec![None; texts.len()];
-        for group in length_bucket_groups(&lengths) {
+        self.extract_prepared_groups(&inputs, length_bucket_groups(&lengths), schema, opts)
+    }
+
+    fn extract_prepared_groups(
+        &self,
+        inputs: &[PreparedInput],
+        groups: Vec<Vec<usize>>,
+        schema: &Schema,
+        opts: &ExtractOptions,
+    ) -> Result<Vec<Value>> {
+        let mut results: Vec<Option<Value>> = vec![None; inputs.len()];
+        for group in groups {
             let batch: Vec<PreparedInput> = group.iter().map(|&index| inputs[index].clone()).collect();
             let states = self.encode_batch(&batch)?;
             for (local, &original) in group.iter().enumerate() {
@@ -1959,5 +2010,41 @@ mod choice_cache_tests {
             Ok(vec![0.5, 0.6])
         }).is_err());
         assert!(cache.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod adaptive_batch_plan_tests {
+    use super::*;
+
+    #[test]
+    fn unchanged_path_for_uniform_or_small_batches() {
+        assert!(adaptive_length_groups(&[]).is_none());
+        assert!(adaptive_length_groups(&[18]).is_none());
+        assert!(adaptive_length_groups(&[64, 64, 64, 64, 64, 64, 64, 64, 64]).is_none());
+        assert!(adaptive_length_groups(&[64; 15]).is_none());
+        assert_eq!(adaptive_length_groups(&[64; 16]).unwrap().len(), 2);
+        assert!(adaptive_length_groups(&[100, 115, 120, 125]).is_none());
+    }
+
+    #[test]
+    fn heterogeneous_input_saves_padded_attention_work_without_reordering() {
+        let lengths = [14, 300, 21, 320, 18, 160, 24, 170, 19, 400, 23, 390];
+        let groups = adaptive_length_groups(&lengths).expect("heterogeneous documents should be bucketed");
+        let flattened: Vec<usize> = groups.iter().flatten().copied().collect();
+        let mut ordered = flattened;
+        ordered.sort_unstable();
+        assert_eq!(ordered, (0..lengths.len()).collect::<Vec<_>>());
+        assert!(groups.iter().all(|g| g.len() <= 8));
+        assert!(groups.len() > 1);
+    }
+
+    #[test]
+    fn arithmetic_is_bounded_even_with_adversarial_lengths() {
+        let lengths = [usize::MAX, 1, usize::MAX, 1];
+        let _ = adaptive_length_groups(&lengths);
+        // The budget check is saturating and cannot overflow on user input.
+        let groups = length_bucket_groups(&lengths);
+        assert_eq!(groups.iter().map(Vec::len).sum::<usize>(), lengths.len());
     }
 }

@@ -991,13 +991,18 @@ impl BoundaryModel {
         let anchor_chars: Vec<Option<(usize, usize)>> =
             records.iter().map(|r| r.anchor.and_then(|a| pass.char_span(scores.spans[a]))).collect();
 
+        // The explicit enum spans are schema-prefix tokens: the same query and
+        // candidate spans must produce the same calibrated score for every
+        // record instance. Keep the cache local to this forward pass/group;
+        // never reuse scores across requests, texts or checkpoint revisions.
+        let mut choice_cache: ChoiceScoreCache = HashMap::new();
         let mut instances = Vec::new();
         for (record_index, record) in records.iter().enumerate() {
             let mut instance = Map::new();
             for (fi, (field, rfield)) in spec.fields.iter().zip(&fields).enumerate() {
                 let selected = record.fields.get(&fi).map(Vec::as_slice).unwrap_or(&[]);
                 let value =
-                    self.format_record_field(pass, field, rfield, selected, record_index, &anchor_chars, threshold)?;
+                    self.format_record_field(pass, field, rfield, selected, record_index, &anchor_chars, threshold, &mut choice_cache)?;
                 instance.insert(field.name.clone(), value);
             }
             if instance.values().any(|v| !is_empty_value(v)) {
@@ -1020,6 +1025,7 @@ impl BoundaryModel {
         record_index: usize,
         anchor_chars: &[Option<(usize, usize)>],
         threshold: f32,
+        choice_cache: &mut ChoiceScoreCache,
     ) -> Result<Value> {
         let fwd = pass.forward.as_ref().expect("record decoding requires a forward pass");
         let opts = pass.opts;
@@ -1057,7 +1063,7 @@ impl BoundaryModel {
                     preferred = vec![preferred[best].clone()];
                 }
                 if !preferred.is_empty() {
-                    return self.decode_choice_field(pass, rfield.query, choices, is_scalar, field.threshold, threshold, Some(&preferred), true);
+                    return self.decode_choice_field(pass, rfield.query, choices, is_scalar, field.threshold, threshold, Some(&preferred), true, Some(choice_cache));
                 }
                 if has_literal {
                     return Ok(if is_scalar { Value::Null } else { Value::Array(Vec::new()) });
@@ -1073,7 +1079,7 @@ impl BoundaryModel {
             if !matched.is_empty() {
                 return Ok(format_structure_field(&matched, is_scalar, opts));
             }
-            return self.decode_choice_field(pass, rfield.query, choices, is_scalar, field.threshold, threshold, None, true);
+            return self.decode_choice_field(pass, rfield.query, choices, is_scalar, field.threshold, threshold, None, true, Some(choice_cache));
         }
         Ok(format_structure_field(&formatted, is_scalar, opts))
     }
@@ -1086,7 +1092,7 @@ impl BoundaryModel {
             let Some(q) = pass.query(group_index, fi) else { continue };
             let is_scalar = field.dtype == FieldDtype::Str;
             let value = if let Some(choices) = &field.choices {
-                self.decode_choice_field(pass, q, choices, is_scalar, field.threshold, pass.opts.threshold, None, false)?
+                self.decode_choice_field(pass, q, choices, is_scalar, field.threshold, pass.opts.threshold, None, false, None)?
             } else {
                 let threshold = field.threshold.unwrap_or(pass.opts.threshold);
                 let scored = self.thresholded(&fwd.scores.spans, &fwd.scores.pair_logits[q], threshold);
@@ -1114,6 +1120,7 @@ impl BoundaryModel {
         default_threshold: f32,
         preferred: Option<&[(String, usize, usize)]>,
         include_spans: bool,
+        choice_cache: Option<&mut ChoiceScoreCache>,
     ) -> Result<Value> {
         let empty = if is_scalar { Value::Null } else { Value::Array(Vec::new()) };
         let (Some(fwd), Some(ts), Some(qs)) = (&pass.forward, &pass.text_states, &pass.query_states) else {
@@ -1134,12 +1141,16 @@ impl BoundaryModel {
             return Ok(empty);
         }
         let spans: Vec<(usize, usize)> = present.iter().map(|&(_, i)| (i, i + 1)).collect();
-        let probabilities: Vec<f32> = self
-            .head
-            .score_explicit_spans(fwd, ts, qs, query, &spans)?
-            .into_iter()
-            .map(|x| self.pair_probability(x))
-            .collect();
+        let compute = || -> Result<Vec<f32>> {
+            Ok(self.head.score_explicit_spans(fwd, ts, qs, query, &spans)?
+                .into_iter()
+                .map(|x| self.pair_probability(x))
+                .collect())
+        };
+        let probabilities = match choice_cache {
+            Some(cache) => cached_choice_probabilities(cache, query, &spans, compute)?,
+            None => compute()?,
+        };
 
         if let Some(preferred) = preferred {
             let preferred: Vec<_> = preferred
@@ -1260,6 +1271,34 @@ impl BoundaryModel {
             })
             .collect())
     }
+}
+
+/// A schema field query is unique within its prepared input; include the
+/// explicit prefix span vector in the key to prevent cross-field aliasing.
+type ChoiceScoreCache = HashMap<(usize, Vec<(usize, usize)>), Vec<f32>>;
+
+/// A cache miss must perform actual model scoring. Errors must never be cached.
+/// Only model-derived float values are reused, never instance-specific source
+/// spans, choice ownership or output formatting.
+fn cached_choice_probabilities(
+    cache: &mut ChoiceScoreCache,
+    query: usize,
+    spans: &[(usize, usize)],
+    compute: impl FnOnce() -> Result<Vec<f32>>,
+) -> Result<Vec<f32>> {
+    let key = (query, spans.to_vec());
+    if let Some(values) = cache.get(&key) {
+        return Ok(values.clone());
+    }
+    let values = compute()?;
+    if values.len() != spans.len() {
+        bail!("explicit enum scorer returned {} probabilities for {} choices", values.len(), spans.len());
+    }
+    if values.iter().any(|p| !p.is_finite() || !(0.0..=1.0).contains(p)) {
+        bail!("explicit enum scorer returned a non-finite or uncalibrated probability");
+    }
+    cache.insert(key, values.clone());
+    Ok(values)
 }
 
 fn is_empty_value(v: &Value) -> bool {
@@ -1862,5 +1901,54 @@ mod confidence_output_contract_tests {
         let value = format_relation(&edge, &opts);
         assert_eq!(value["head"]["confidence"], json!(0.91_f32));
         assert_eq!(value["tail"]["confidence"], json!(0.87_f32));
+    }
+}
+
+#[cfg(test)]
+mod choice_cache_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn scores_repeated_schema_choices_only_once_per_group() {
+        let calls = Cell::new(0);
+        let mut cache = ChoiceScoreCache::new();
+        let spans = [(3, 4), (7, 8)];
+        for _ in 0..6 {
+            let scores = cached_choice_probabilities(&mut cache, 5, &spans, || {
+                calls.set(calls.get() + 1);
+                Ok(vec![0.25, 0.75])
+            }).unwrap();
+            assert_eq!(scores, [0.25, 0.75]);
+        }
+        assert_eq!(calls.get(), 1, "repeated record instances must reuse calibrated enum scores");
+
+        // Distinct query or explicit choices may change the evidence.
+        cached_choice_probabilities(&mut cache, 6, &spans, || {
+            calls.set(calls.get() + 1);
+            Ok(vec![0.1, 0.9])
+        }).unwrap();
+        cached_choice_probabilities(&mut cache, 5, &[(3, 4)], || {
+            calls.set(calls.get() + 1);
+            Ok(vec![0.3])
+        }).unwrap();
+        assert_eq!(calls.get(), 3);
+    }
+
+    #[test]
+    fn failed_or_invalid_scoring_is_not_cached() {
+        let mut cache = ChoiceScoreCache::new();
+        assert!(cached_choice_probabilities(&mut cache, 0, &[(1, 2)], || {
+            Err(anyhow!("model scoring failed"))
+        }).is_err());
+        assert!(cache.is_empty());
+        assert!(cached_choice_probabilities(&mut cache, 0, &[(1, 2)], || {
+            Ok(vec![f32::NAN])
+        }).is_err());
+        assert!(cache.is_empty());
+        assert!(cached_choice_probabilities(&mut cache, 0, &[(1, 2)], || {
+            Ok(vec![0.5, 0.6])
+        }).is_err());
+        assert!(cache.is_empty());
     }
 }

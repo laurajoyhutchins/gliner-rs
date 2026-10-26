@@ -1,0 +1,81 @@
+name: Whole-model Rust record-score cache benchmark
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'benchmarks/**'
+      - '.github/workflows/rust-revision-record-perf.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare-corrected-revisions:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout source-equivalent Python-parity baseline
+        uses: actions/checkout@v4
+        with:
+          repository: laurajoyhutchins/gliner-rs
+          ref: 60f4be75c5a7c10d7a4a156fce3b4d9af82c67ac
+          path: rust-baseline
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.98.0'
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Compile exact candidate and baseline
+        run: |
+          cargo build --release --locked --bin gliner
+          cargo build --release --locked --bin gliner --manifest-path rust-baseline/Cargo.toml
+      - name: Install immutable model transport
+        run: python -m pip install huggingface_hub==1.33.0
+      - name: Fetch pinned small model and validate source SHA-256
+        run: |
+          python - <<'PY'
+          from huggingface_hub import snapshot_download
+          snapshot_download(
+              repo_id='fastino/gliner2.5-small-v1',
+              revision='df5910e44bc4ffdb0d95399a83b0ca4516349aa5',
+              local_dir='checkpoint',
+              allow_patterns=['config.json', 'encoder_config/config.json', 'tokenizer.json', 'model.safetensors'],
+          )
+          PY
+          printf '%s  %s\n' '4ee982787ace270d4bf15dbcb28ced38e0aa201372347114ceedd6336055de2b' checkpoint/model.safetensors | sha256sum --check
+      - name: Compare complete outputs and warm whole-model latency on regular cases
+        run: |
+          python benchmarks/compare_rust_revisions.py \
+            --baseline rust-baseline/target/release/gliner \
+            --candidate target/release/gliner \
+            --model-dir checkpoint \
+            --checkpoint-sha256 4ee982787ace270d4bf15dbcb28ced38e0aa201372347114ceedd6336055de2b \
+            --threads 2 --warmups 1 --pairs 2 --samples 6 \
+            --out rust-revision-general.json
+      - name: Compare complete outputs and warm whole-model latency on enum-heavy records
+        run: |
+          python benchmarks/compare_rust_revisions.py \
+            --baseline rust-baseline/target/release/gliner \
+            --candidate target/release/gliner \
+            --cases benchmarks/record_perf_cases.json \
+            --model-dir checkpoint \
+            --checkpoint-sha256 4ee982787ace270d4bf15dbcb28ced38e0aa201372347114ceedd6336055de2b \
+            --threads 2 --warmups 1 --pairs 2 --samples 6 \
+            --out rust-revision-records.json
+      - name: Upload immutable input-bound benchmark evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gliner-rs-record-enum-perf-evidence
+          path: |
+            rust-revision-general.json
+            rust-revision-records.json
+            rust-revision-general.*.log
+            rust-revision-records.*.log
+          if-no-files-found: warn
+          retention-days: 7

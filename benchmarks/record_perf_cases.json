@@ -1,0 +1,23 @@
+[
+  {
+    "name": "two_orders_enum",
+    "text": "Order #1234 for 3 laptops was shipped yesterday via FedEx. Order #5678 for a monitor is still pending.",
+    "json": [
+      "order=order_id::str,quantity::str,status::[shipped|pending|cancelled],carrier::str"
+    ]
+  },
+  {
+    "name": "six_orders_enum",
+    "text": "Order #1234 for 3 laptops was shipped via FedEx. Order #5678 for a monitor is pending. Order #9012 for 4 servers was shipped via UPS. Order #3456 for 2 racks is pending. Order #7890 for 8 SSDs was cancelled. Order #2468 for 6 switches was shipped by DHL.",
+    "json": [
+      "order=order_id::str,quantity::str,status::[shipped|pending|cancelled],carrier::str"
+    ]
+  },
+  {
+    "name": "ten_orders_enum",
+    "text": "Order #1001: 2 laptops shipped by UPS. Order #1002: 1 monitor pending. Order #1003: 5 drives shipped by FedEx. Order #1004: 3 servers cancelled. Order #1005: 4 cables shipped by DHL. Order #1006: 2 routers pending. Order #1007: 7 modules shipped by UPS. Order #1008: 1 rack pending. Order #1009: 9 fans shipped by FedEx. Order #1010: 2 power supplies cancelled.",
+    "json": [
+      "order=order_id::str,quantity::str,status::[shipped|pending|cancelled],carrier::str"
+    ]
+  }
+]

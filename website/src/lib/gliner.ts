@@ -8,6 +8,7 @@ import type { ModelDef } from "./models";
 import { CHECKPOINT_FILES, checkpointLock } from "./checkpointLocks";
 import { fetchVerifiedCheckpoint, clearVerifiedCheckpointCache, verifiedCheckpointCacheKeys } from "./verifiedCheckpoint";
 import { ModelLifecycle } from "./modelLifecycle";
+import { assertReplacementFits, explainModelLoadFailure } from "./modelMemory";
 import {
   fsAccessSupported,
   getSubdirectory,
@@ -44,12 +45,14 @@ type WasmExports = {
 };
 
 let wasmReady: Promise<WasmExports> | null = null;
+let wasmMemory: WebAssembly.Memory | null = null;
 
 function loadWasm(): Promise<WasmExports> {
   if (!wasmReady) {
     wasmReady = (async () => {
       const mod = (await import("../wasm-pkg/gliner_rs.js")) as unknown as WasmExports;
-      await mod.default();
+      const instance = await mod.default() as { memory?: WebAssembly.Memory };
+      wasmMemory = instance.memory ?? null;
       mod.init_panic_hook();
       return mod;
     })();
@@ -127,7 +130,12 @@ export async function loadModelFromHandle(
   }
   const configJson = new TextDecoder().decode(bytes["config.json"]);
   const encoderConfigJson = new TextDecoder().decode(bytes["encoder_config/config.json"]);
-  const model = wasm.WasmModel.load(bytes["model.safetensors"], bytes["tokenizer.json"], configJson, encoderConfigJson);
+  let model: WasmModel;
+  try {
+    model = wasm.WasmModel.load(bytes["model.safetensors"], bytes["tokenizer.json"], configJson, encoderConfigJson);
+  } catch (error) {
+    explainModelLoadFailure(error, def);
+  }
   return { model, def, source: "local", libraryHandle: library.handle };
 }
 
@@ -153,7 +161,12 @@ export async function loadModel(
   signal?.throwIfAborted();
   const configJson = new TextDecoder().decode(files["config.json"]);
   const encoderConfigJson = new TextDecoder().decode(files["encoder_config/config.json"]);
-  const model = wasm.WasmModel.load(files["model.safetensors"], files["tokenizer.json"], configJson, encoderConfigJson);
+  let model: WasmModel;
+  try {
+    model = wasm.WasmModel.load(files["model.safetensors"], files["tokenizer.json"], configJson, encoderConfigJson);
+  } catch (error) {
+    explainModelLoadFailure(error, def);
+  }
   return { model, def, source: "hf", revision: lock.revision };
 }
 
@@ -171,6 +184,30 @@ export async function cachedModelKeys(): Promise<string[]> {
 const [current, setCurrent] = createSignal<LoadedModel | null>(null);
 export const currentModel = current;
 const lifecycle = new ModelLifecycle(current, setCurrent);
+const [automaticResumeDisabled, setAutomaticResumeDisabled] = createSignal(false);
+export { automaticResumeDisabled };
+
+/** A conservative, fail-closed preflight. WASM memory grows monotonically and
+ * garbage collection cannot be assumed to make room before a second model
+ * initializes; avoid initiating the download when the estimate exceeds the
+ * browser's bounded safe replacement budget. */
+function preflightReplacement(def: ModelDef): void {
+  const active = current();
+  const deviceMemoryGiB = typeof navigator === "undefined"
+    ? undefined
+    : (navigator as Navigator & { deviceMemory?: number }).deviceMemory;
+  try {
+    assertReplacementFits(active?.def ?? null, def, {
+      deviceMemoryGiB,
+      wasmLinearMiB: wasmMemory?.buffer.byteLength
+        ? wasmMemory.buffer.byteLength / (1024 * 1024)
+        : undefined,
+    });
+  } catch (error) {
+    lifecycle.cancelPending();
+    throw error;
+  }
+}
 
 export type ModelSource = "hf" | "local";
 
@@ -299,9 +336,11 @@ export async function selectModel(def: ModelDef, onProgress?: (p: DownloadProgre
     writePersisted({ source: "hf", hfModelKey: def.key });
     return existing;
   }
+  preflightReplacement(def);
   return lifecycle.replace(
     (signal) => loadModel(def, onProgress, signal),
     () => {
+      setAutomaticResumeDisabled(false);
       setPreferredSource("hf");
       writePersisted({ source: "hf", hfModelKey: def.key });
     },
@@ -321,6 +360,7 @@ export async function selectLocalModel(def: ModelDef, onProgress?: (p: DownloadP
     writePersisted({ source: "local", localRootName: library.rootName, localModelKey: def.key });
     return existing;
   }
+  preflightReplacement(def);
   return lifecycle.replace(
     async (signal) => {
       signal.throwIfAborted();
@@ -330,6 +370,7 @@ export async function selectLocalModel(def: ModelDef, onProgress?: (p: DownloadP
       return loaded;
     },
     () => {
+      setAutomaticResumeDisabled(false);
       setPreferredSource("local");
       writePersisted({ source: "local", localRootName: library.rootName, localModelKey: def.key });
     },
@@ -337,5 +378,9 @@ export async function selectLocalModel(def: ModelDef, onProgress?: (p: DownloadP
 }
 
 export function unloadModel(): void {
+  // Prevent every picker from automatically restoring a model just unloaded
+  // deliberately to recover memory for a different checkpoint.
+  setAutomaticResumeDisabled(true);
   lifecycle.unload();
+  writePersisted({ hfModelKey: undefined, localModelKey: undefined });
 }

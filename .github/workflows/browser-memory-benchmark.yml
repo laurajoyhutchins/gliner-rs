@@ -1,0 +1,38 @@
+name: Real Chromium model memory benchmark
+
+on:
+  pull_request:
+    paths:
+      - 'website/src/lib/modelMemory.ts'
+      - 'website/src/lib/gliner.ts'
+      - 'website/src/components/demo/ModelPicker.tsx'
+      - 'website/browser-tests/**'
+      - '.github/workflows/browser-memory-benchmark.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  model-memory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: website/browser-tests/package-lock.json
+      - name: Install pinned browser harness
+        working-directory: website/browser-tests
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Install pinned Chromium headless shell
+        working-directory: website/browser-tests
+        run: npx playwright install --with-deps --only-shell chromium
+      - name: Measure cold load and bounded transactional switching in real Chromium
+        working-directory: website/browser-tests
+        env:
+          GLINER_REAL_CHECKPOINT: '1'
+          GLINER_MEMORY_BENCHMARK: '1'
+        run: npm test

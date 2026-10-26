@@ -96,3 +96,20 @@ pnpm test        # transactional lifecycle and corrupted/short/aborted downloads
 pnpm check       # TypeScript
 pnpm build       # deployable website
 ```
+
+
+## Model memory preflight
+
+The browser cannot assume a second loaded model will fit alongside the first.
+Before any replacement download, `src/lib/modelMemory.ts` applies a
+conservative check to checkpoint sizes, existing WebAssembly linear memory,
+and (when available) the browser's rounded `navigator.deviceMemory`.
+It deliberately keeps headroom below wasm32's theoretical 4-GiB ceiling.
+If the estimate exceeds this budget, selection fails **before downloading**
+and preserves the active model. Use the new **unload active model** control
+and retry, or refresh the tab if WebAssembly linear memory is already large.
+Unloading is distinct from deleting cached checkpoint files and prevents
+the automatic-resume effect from reloading the deliberately unloaded model.
+
+These multipliers are conservative heuristics, not observed peak-memory
+measurements or proof that every accepted load will succeed on all browsers.

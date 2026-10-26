@@ -48,3 +48,13 @@ test("invalid estimates cannot bypass the guard", () => {
 test("oversized new checkpoint is rejected before any download", () => {
   assert.throws(() => assertReplacementFits(null, decide), ModelMemoryBudgetError);
 });
+
+test("allocation failures carry actionable recovery and non-memory errors keep their original cause", async () => {
+  const { explainModelLoadFailure } = await import("../src/lib/modelMemory.ts");
+  assert.throws(
+    () => explainModelLoadFailure(new RangeError("memory access out of bounds"), small),
+    /refresh the tab to reset WebAssembly linear memory/,
+  );
+  const invalid = new Error("invalid checkpoint config");
+  assert.throws(() => explainModelLoadFailure(invalid, small), (error) => error === invalid);
+});

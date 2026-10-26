@@ -81,3 +81,19 @@ export function assertReplacementFits(
   if (estimate.isOversized) throw new ModelMemoryBudgetError(estimate, active, replacement);
   return estimate;
 }
+
+/** Preserve the original error for non-memory failures, but offer recovery
+ * guidance if the browser allocator still rejects a preflight-approved load.
+ * A killed renderer cannot be caught, which is why preflight runs first. */
+export function explainModelLoadFailure(error: unknown, replacement: ModelDef): never {
+  const message = String(error);
+  if (/out.of.memory|memory allocation|allocation failed|failed to allocate|memory\.grow|memory access out of bounds/i.test(message)) {
+    throw new Error(
+      `Browser memory allocation failed while loading ${replacement.label}: ${message}. ` +
+      `Unload the active model, or refresh the tab to reset WebAssembly linear memory, ` +
+      `then retry a smaller checkpoint or use the native CLI.`,
+      { cause: error },
+    );
+  }
+  throw error;
+}

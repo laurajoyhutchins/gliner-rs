@@ -8,7 +8,7 @@ import type { ModelDef } from "./models";
 import { CHECKPOINT_FILES, checkpointLock } from "./checkpointLocks";
 import { fetchVerifiedCheckpoint, clearVerifiedCheckpointCache, verifiedCheckpointCacheKeys } from "./verifiedCheckpoint";
 import { ModelLifecycle } from "./modelLifecycle";
-import { assertReplacementFits } from "./modelMemory";
+import { assertReplacementFits, explainModelLoadFailure } from "./modelMemory";
 import {
   fsAccessSupported,
   getSubdirectory,
@@ -130,7 +130,12 @@ export async function loadModelFromHandle(
   }
   const configJson = new TextDecoder().decode(bytes["config.json"]);
   const encoderConfigJson = new TextDecoder().decode(bytes["encoder_config/config.json"]);
-  const model = wasm.WasmModel.load(bytes["model.safetensors"], bytes["tokenizer.json"], configJson, encoderConfigJson);
+  let model: WasmModel;
+  try {
+    model = wasm.WasmModel.load(bytes["model.safetensors"], bytes["tokenizer.json"], configJson, encoderConfigJson);
+  } catch (error) {
+    explainModelLoadFailure(error, def);
+  }
   return { model, def, source: "local", libraryHandle: library.handle };
 }
 
@@ -156,7 +161,12 @@ export async function loadModel(
   signal?.throwIfAborted();
   const configJson = new TextDecoder().decode(files["config.json"]);
   const encoderConfigJson = new TextDecoder().decode(files["encoder_config/config.json"]);
-  const model = wasm.WasmModel.load(files["model.safetensors"], files["tokenizer.json"], configJson, encoderConfigJson);
+  let model: WasmModel;
+  try {
+    model = wasm.WasmModel.load(files["model.safetensors"], files["tokenizer.json"], configJson, encoderConfigJson);
+  } catch (error) {
+    explainModelLoadFailure(error, def);
+  }
   return { model, def, source: "hf", revision: lock.revision };
 }
 

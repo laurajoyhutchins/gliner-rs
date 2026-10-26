@@ -48,7 +48,10 @@ pub fn load_buffer(buffer: &[u8], device: &Device) -> Result<HashMap<String, Ten
     if buffer.len() < 8 {
         bail!("safetensors buffer is too short to hold a header length");
     }
-    let header_len = u64::from_le_bytes(buffer[..8].try_into().expect("8 bytes")) as usize;
+    // Do not truncate the serialized u64 on wasm32. A header length of
+    // 2^32 + 2 previously wrapped to 2 and could admit a malformed file.
+    let header_len = u64::from_le_bytes(buffer[..8].try_into().expect("8 bytes"));
+    let header_len = usize::try_from(header_len).context("safetensors header length cannot fit in usize")?;
     let data_start = 8usize.checked_add(header_len).context("safetensors header length overflows")?;
     if data_start > buffer.len() {
         bail!("safetensors header ({header_len} bytes) runs past the end of the file");
@@ -92,4 +95,50 @@ pub fn load_buffer(buffer: &[u8], device: &Device) -> Result<HashMap<String, Ten
         tensors.insert(name, tensor);
     }
     Ok(tensors)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn buffer_with_tensor(header: &str, tensor_bytes: &[u8]) -> Vec<u8> {
+        let mut buffer = (header.len() as u64).to_le_bytes().to_vec();
+        buffer.extend_from_slice(header.as_bytes());
+        buffer.extend_from_slice(tensor_bytes);
+        buffer
+    }
+
+    #[test]
+    fn loads_a_small_valid_tensor_and_ignores_metadata() {
+        let header = r#"{"__metadata__":{"format":"pt"},"weights":{"dtype":"F32","shape":[1],"data_offsets":[0,4]}}"#;
+        let buffer = buffer_with_tensor(header, &1.25_f32.to_le_bytes());
+        let tensors = load_buffer(&buffer, &Device::Cpu).unwrap();
+        assert_eq!(tensors.len(), 1);
+        assert_eq!(tensors["weights"].to_vec1::<f32>().unwrap(), vec![1.25]);
+    }
+
+    #[test]
+    fn rejects_header_lengths_that_would_wrap_on_wasm32() {
+        // A u64 length is part of the file format, but wasm32 usize is 32-bit.
+        // The old `as usize` cast turned this into a valid 2-byte "{}" header.
+        let mut buffer = ((1u64 << 32) + 2).to_le_bytes().to_vec();
+        buffer.extend_from_slice(b"{}");
+        assert!(load_buffer(&buffer, &Device::Cpu).is_err());
+    }
+
+    #[test]
+    fn rejects_offsets_outside_the_data_block() {
+        let header = r#"{"weights":{"dtype":"F32","shape":[1],"data_offsets":[0,8]}}"#;
+        let buffer = buffer_with_tensor(header, &1.25_f32.to_le_bytes());
+        let error = load_buffer(&buffer, &Device::Cpu).unwrap_err().to_string();
+        assert!(error.contains("outside"), "{error}");
+    }
+
+    #[test]
+    fn rejects_shape_and_data_length_disagreement() {
+        let header = r#"{"weights":{"dtype":"F32","shape":[2],"data_offsets":[0,4]}}"#;
+        let buffer = buffer_with_tensor(header, &1.25_f32.to_le_bytes());
+        let error = load_buffer(&buffer, &Device::Cpu).unwrap_err().to_string();
+        assert!(error.contains("shape/dtype"), "{error}");
+    }
 }

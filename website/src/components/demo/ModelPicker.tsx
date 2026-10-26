@@ -16,7 +16,6 @@ import {
   selectLocalLibrary,
   selectLocalModel,
   selectModel,
-  unloadModel,
   type LoadedModel,
 } from "../../lib/gliner";
 
@@ -70,6 +69,7 @@ export function ModelPicker(props: { models: ModelDef[]; onLoaded: (m: LoadedMod
   const [progress, setProgress] = createSignal<DownloadProgress | null>(null);
   const [error, setError] = createSignal<string | null>(null);
   const [loadedKey, setLoadedKey] = createSignal<string | null>(null);
+  const autoAttempted = new Set<string>();
 
   const localMatches = createMemo(() => {
     const lib = localLibrary();
@@ -86,7 +86,7 @@ export function ModelPicker(props: { models: ModelDef[]; onLoaded: (m: LoadedMod
       setLoadedKey(def.key);
       props.onLoaded(result);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      if (!(e instanceof DOMException && e.name === "AbortError")) setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
     }
@@ -137,10 +137,8 @@ export function ModelPicker(props: { models: ModelDef[]; onLoaded: (m: LoadedMod
     setError(null);
     try {
       await clearModelCache();
-      if (preferredSource() === "hf") {
-        unloadModel();
-        setLoadedKey(null);
-      }
+      // Clearing downloaded files cannot invalidate a currently running model.
+      // Model bytes are already loaded into WebAssembly memory.
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -169,7 +167,12 @@ export function ModelPicker(props: { models: ModelDef[]; onLoaded: (m: LoadedMod
       if (matches.length > 0 && !(loadedKey() && preferredSource() === "local")) {
         // Always the largest one found — the best-quality checkpoint on
         // hand, since it's already local and costs nothing to use.
-        void loadLocal(matches.reduce((a, b) => (b.approxSizeMb > a.approxSizeMb ? b : a)));
+        const candidate = matches.reduce((a, b) => (b.approxSizeMb > a.approxSizeMb ? b : a));
+        const request = `local:${lib?.rootName}:${candidate.key}`;
+        if (!autoAttempted.has(request)) {
+          autoAttempted.add(request);
+          void loadLocal(candidate);
+        }
         return;
       }
       if (matches.length > 0) return; // already showing the right local model
@@ -184,7 +187,11 @@ export function ModelPicker(props: { models: ModelDef[]; onLoaded: (m: LoadedMod
         const def = props.models.find((m) => m.key === persisted.hfModelKey);
         if (def) {
           setSelected(def);
-          void load();
+          const request = `hf:${def.key}`;
+          if (!autoAttempted.has(request)) {
+            autoAttempted.add(request);
+            void load();
+          }
         }
       }
     },

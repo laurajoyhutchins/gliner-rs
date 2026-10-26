@@ -124,11 +124,29 @@ pub fn variant_cache_dir(variant: &VariantDef) -> Option<PathBuf> {
 }
 
 fn fetch_to_file(url: &str, dest: &Path, expected_sha256: Option<&str>) -> Result<()> {
+    let resp = ureq::get(url).call().with_context(|| format!("downloading {url}"))?;
+    let len: Option<u64> = resp.header("Content-Length").and_then(|v| v.parse().ok());
+
+    eprint!("  {} ...", dest.file_name().unwrap_or_default().to_string_lossy());
+    std::io::stderr().flush().ok();
+    let written = stage_verified_file(resp.into_reader(), dest, len, expected_sha256)?;
+    eprintln!(" done ({written} bytes)");
+    Ok(())
+}
+
+/// Deterministic I/O boundary: only publishes fully received, verified bytes.
+/// Separated from HTTP so cache lifecycle can be tested with in-memory input.
+fn stage_verified_file(
+    mut reader: impl Read,
+    dest: &Path,
+    expected_len: Option<u64>,
+    expected_sha256: Option<&str>,
+) -> Result<u64> {
     if let Some(dir) = dest.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
-    // The fixed `.part` sibling could be clobbered by a simultaneous CLI.
-    // An exclusive, process-specific temporary file avoids that collision.
+    // An exclusive, process-specific temporary file avoids collisions among
+    // simultaneous downloaders, unlike a single fixed `.part` sibling.
     let temporary_name = format!(
         "{}.{}.{}.part",
         dest.file_name().unwrap_or_default().to_string_lossy(),
@@ -136,22 +154,15 @@ fn fetch_to_file(url: &str, dest: &Path, expected_sha256: Option<&str>) -> Resul
         NEXT_DOWNLOAD.fetch_add(1, Ordering::Relaxed)
     );
     let part = dest.with_file_name(temporary_name);
-
-    let resp = ureq::get(url).call().with_context(|| format!("downloading {url}"))?;
-    let len: Option<u64> = resp.header("Content-Length").and_then(|v| v.parse().ok());
-
-    eprint!("  {} ...", dest.file_name().unwrap_or_default().to_string_lossy());
-    std::io::stderr().flush().ok();
-
     let mut file = OpenOptions::new().write(true).create_new(true).open(&part)
         .with_context(|| format!("creating exclusive temporary file {}", part.display()))?;
+
     let written = (|| -> Result<u64> {
-        let mut reader = resp.into_reader();
         let mut buf = [0u8; 1 << 16];
         let mut written = 0u64;
         let mut hasher = expected_sha256.map(|_| Sha256::new());
         loop {
-            let n = reader.read(&mut buf).with_context(|| format!("reading body for {url}"))?;
+            let n = reader.read(&mut buf).with_context(|| format!("reading download for {}", dest.display()))?;
             if n == 0 {
                 break;
             }
@@ -161,9 +172,12 @@ fn fetch_to_file(url: &str, dest: &Path, expected_sha256: Option<&str>) -> Resul
             }
             written += n as u64;
         }
-        if let Some(len) = len {
-            if written != len {
-                bail!("short read for {url}: got {written} bytes, expected {len}");
+        if let Some(expected_len) = expected_len {
+            if written != expected_len {
+                bail!(
+                    "short download for {}: got {written} bytes, expected {expected_len}",
+                    dest.display()
+                );
             }
         }
         if let (Some(expected), Some(hasher)) = (expected_sha256, hasher) {
@@ -189,8 +203,7 @@ fn fetch_to_file(url: &str, dest: &Path, expected_sha256: Option<&str>) -> Resul
         let _ = std::fs::remove_file(&part);
         return Err(error).with_context(|| format!("renaming {} to {}", part.display(), dest.display()));
     }
-    eprintln!(" done ({written} bytes)");
-    Ok(())
+    Ok(written)
 }
 
 /// Return a variant's checkpoint directory, downloading missing files.
@@ -263,6 +276,36 @@ mod tests {
     #[test]
     fn sha256_matches_known_vector() {
         assert_eq!(sha256_reader(&mut Cursor::new(b"hello")).unwrap(), TEST_HASH);
+    }
+
+    #[test]
+    fn staged_bytes_publish_only_after_length_and_digest_agree() {
+        let dir = std::env::temp_dir().join(format!(
+            "gliner-rs-stage-test-{}-{}",
+            std::process::id(),
+            NEXT_DOWNLOAD.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let good = dir.join("good.json");
+        let corrupt = dir.join("corrupt.json");
+        let short = dir.join("short.json");
+
+        let accepted = stage_verified_file(Cursor::new(b"hello"), &good, Some(5), Some(TEST_HASH));
+        let rejected_hash = stage_verified_file(Cursor::new(b"other"), &corrupt, Some(5), Some(TEST_HASH));
+        let rejected_len = stage_verified_file(Cursor::new(b"hello"), &short, Some(6), Some(TEST_HASH));
+        let staged_leftovers: Vec<_> = std::fs::read_dir(&dir).unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "part"))
+            .collect();
+
+        assert_eq!(accepted.unwrap(), 5);
+        assert_eq!(std::fs::read(&good).unwrap(), b"hello");
+        assert!(rejected_hash.unwrap_err().to_string().contains("SHA-256 mismatch"));
+        assert!(rejected_len.unwrap_err().to_string().contains("short download"));
+        assert!(!corrupt.exists());
+        assert!(!short.exists());
+        assert!(staged_leftovers.is_empty(), "stale download staging files: {staged_leftovers:?}");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

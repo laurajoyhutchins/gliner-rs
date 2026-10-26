@@ -1821,16 +1821,16 @@ mod confidence_output_contract_tests {
             ..Default::default()
         };
         let value = format_relation(&edge, &detailed);
-        assert_eq!(value["confidence"], json!(0.63));
-        assert_eq!(value["head"]["confidence"], json!(0.97));
-        assert_eq!(value["tail"]["confidence"], json!(0.82));
+        assert_eq!(value["confidence"], json!(0.63_f32));
+        assert_eq!(value["head"]["confidence"], json!(0.97_f32));
+        assert_eq!(value["tail"]["confidence"], json!(0.82_f32));
         assert_eq!(value["head"]["start"], 0);
         assert_eq!(value["tail"]["end"], 19);
 
         let no_offsets = ExtractOptions { include_spans: false, ..detailed.clone() };
         let value = format_relation(&edge, &no_offsets);
         assert!(value["head"].get("start").is_none());
-        assert_eq!(value["head"]["confidence"], json!(0.97));
+        assert_eq!(value["head"]["confidence"], json!(0.97_f32));
 
         let plain = ExtractOptions {
             include_confidence: false,
@@ -1860,7 +1860,7 @@ mod confidence_output_contract_tests {
             ..Default::default()
         };
         let value = format_relation(&edge, &opts);
-        assert_eq!(value["head"]["confidence"], json!(0.91));
-        assert_eq!(value["tail"]["confidence"], json!(0.87));
+        assert_eq!(value["head"]["confidence"], json!(0.91_f32));
+        assert_eq!(value["tail"]["confidence"], json!(0.87_f32));
     }
 }

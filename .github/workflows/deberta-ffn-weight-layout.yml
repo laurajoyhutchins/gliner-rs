@@ -1,0 +1,102 @@
+name: Portable DeBERTa FFN weight-layout experiment
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'benchmarks/**'
+      - '.github/workflows/deberta-ffn-weight-layout.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.98.0'
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Validate both FFN storage layouts with numeric operator tests
+        run: |
+          cargo test --release --locked --lib deberta::tests::prepared_ffn_gemm_matches_regular_candle_linear
+          cargo test --release --locked --features prepacked-ffn --lib deberta::tests::prepared_ffn_gemm_matches_regular_candle_linear
+      - name: Build portable reference from exact source
+        run: |
+          cargo build --release --locked --bin gliner
+          mkdir -p baseline
+          cp target/release/gliner baseline/gliner
+      - name: Build prepared-weight candidate from exact source
+        run: |
+          cargo build --release --locked --bin gliner --features prepacked-ffn
+          mkdir -p candidate
+          cp target/release/gliner candidate/gliner
+      - name: Install pinned checkpoint fetcher
+        run: python -m pip install huggingface_hub==1.33.0
+      - name: Verify immutable model inputs
+        run: |
+          python - <<'PY'
+          from huggingface_hub import snapshot_download
+          snapshot_download(
+              repo_id='fastino/gliner2.5-small-v1',
+              revision='df5910e44bc4ffdb0d95399a83b0ca4516349aa5',
+              local_dir='checkpoint',
+              allow_patterns=['config.json', 'encoder_config/config.json', 'tokenizer.json', 'model.safetensors'],
+          )
+          PY
+          printf '%s  %s\n' '4ee982787ace270d4bf15dbcb28ced38e0aa201372347114ceedd6336055de2b' checkpoint/model.safetensors | sha256sum --check
+      - name: Record host and binary provenance
+        run: |
+          rustc --version --verbose > ffn-host.txt
+          lscpu >> ffn-host.txt
+          sha256sum baseline/gliner candidate/gliner >> ffn-host.txt
+          printf 'baseline=release default; candidate=release feature prepacked-ffn\n' >> ffn-host.txt
+      - name: Whole-model AB/BA, exact outputs on ordinary workload
+        run: |
+          python benchmarks/compare_rust_revisions.py \
+            --baseline baseline/gliner --candidate candidate/gliner \
+            --model-dir checkpoint \
+            --checkpoint-sha256 4ee982787ace270d4bf15dbcb28ced38e0aa201372347114ceedd6336055de2b \
+            --threads 2 --warmups 2 --pairs 2 --samples 8 \
+            --out ffn-general.json
+      - name: Whole-model AB/BA, exact outputs on record-heavy workload
+        run: |
+          python benchmarks/compare_rust_revisions.py \
+            --baseline baseline/gliner --candidate candidate/gliner \
+            --model-dir checkpoint --cases benchmarks/record_perf_cases.json \
+            --checkpoint-sha256 4ee982787ace270d4bf15dbcb28ced38e0aa201372347114ceedd6336055de2b \
+            --threads 2 --warmups 2 --pairs 2 --samples 8 \
+            --out ffn-records.json
+      - name: Profile encoder FFN stage attribution for both binaries
+        run: |
+          python benchmarks/profile_stages.py \
+            --rust-bin baseline/gliner --model-dir checkpoint \
+            --checkpoint-sha256 4ee982787ace270d4bf15dbcb28ced38e0aa201372347114ceedd6336055de2b \
+            --threads 2 --warmups 2 --samples 6 --out ffn-profile-baseline.json
+          python benchmarks/profile_stages.py \
+            --rust-bin candidate/gliner --model-dir checkpoint \
+            --checkpoint-sha256 4ee982787ace270d4bf15dbcb28ced38e0aa201372347114ceedd6336055de2b \
+            --threads 2 --warmups 2 --samples 6 --port 18933 --out ffn-profile-candidate.json
+      - name: Save run-bound evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ffn-layout-whole-model-evidence
+          path: |
+            ffn-host.txt
+            ffn-general.json
+            ffn-records.json
+            ffn-profile-*.json
+            ffn-profile-*.stages.log
+            ffn-general.*.log
+            ffn-records.*.log
+          if-no-files-found: warn
+          retention-days: 7

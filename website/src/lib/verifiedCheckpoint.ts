@@ -126,7 +126,8 @@ export async function fetchVerifiedCheckpoint(
   signal?.throwIfAborted();
   if (cache) {
     try {
-      await cache.put(url, new Response(bytes, {
+      // This buffer is always a zero-offset owned ArrayBuffer from verifiedBytes.
+      await cache.put(url, new Response(bytes.buffer as ArrayBuffer, {
         headers: { "content-type": "application/octet-stream", "content-length": String(bytes.byteLength) },
       }));
     } catch {

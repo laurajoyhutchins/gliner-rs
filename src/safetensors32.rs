@@ -52,6 +52,11 @@ pub fn load_buffer(buffer: &[u8], device: &Device) -> Result<HashMap<String, Ten
     // 2^32 + 2 previously wrapped to 2 and could admit a malformed file.
     let header_len = u64::from_le_bytes(buffer[..8].try_into().expect("8 bytes"));
     let header_len = usize::try_from(header_len).context("safetensors header length cannot fit in usize")?;
+    // Match the upstream safety boundary: malformed inputs must not induce
+    // arbitrarily large JSON allocations even when the caller owns the buffer.
+    if header_len > 100_000_000 {
+        bail!("safetensors header exceeds the 100 MB safety limit");
+    }
     let data_start = 8usize.checked_add(header_len).context("safetensors header length overflows")?;
     if data_start > buffer.len() {
         bail!("safetensors header ({header_len} bytes) runs past the end of the file");
@@ -61,7 +66,11 @@ pub fn load_buffer(buffer: &[u8], device: &Device) -> Result<HashMap<String, Ten
         serde_json::from_slice(&buffer[8..data_start]).context("parsing the safetensors header")?;
     let data = &buffer[data_start..];
 
-    let mut tensors = HashMap::with_capacity(header.len());
+    // Validate every tensor and the complete data layout before allocating
+    // any Candle tensor. Individual in-bounds slices are insufficient:
+    // safetensors also forbids overlapping slices and uncovered bytes.
+    let mut validated = Vec::with_capacity(header.len());
+    let mut intervals = Vec::with_capacity(header.len());
     for (name, value) in header {
         if name == "__metadata__" {
             continue;
@@ -72,8 +81,7 @@ pub fn load_buffer(buffer: &[u8], device: &Device) -> Result<HashMap<String, Ten
         if end < start || end > data.len() as u64 {
             bail!("tensor {name:?} has data offsets {start}..{end} outside the {} byte data block", data.len());
         }
-        // The whole point: all of this stays in u64, so a tensor larger than
-        // `u32::MAX` bits doesn't wrap on wasm32.
+        // Keep element counts and byte sizes in u64 to support wasm32.
         let dtype = dtype_of(&info.dtype)?;
         let elements = info.shape.iter().try_fold(1u64, |acc, d| acc.checked_mul(*d)).with_context(|| {
             format!("tensor {name:?} shape {:?} overflows an element count", info.shape)
@@ -89,7 +97,26 @@ pub fn load_buffer(buffer: &[u8], device: &Device) -> Result<HashMap<String, Ten
             .iter()
             .map(|d| usize::try_from(*d).with_context(|| format!("tensor {name:?} dimension {d} does not fit in usize")))
             .collect::<Result<_>>()?;
-        let (start, end) = (start as usize, end as usize);
+        intervals.push((start, end));
+        validated.push((name, dtype, shape, start as usize, end as usize));
+    }
+
+    // JSON object order is not significant. Compare ordered byte intervals,
+    // allowing zero-sized tensors only at the current position.
+    intervals.sort_unstable();
+    let mut cursor = 0u64;
+    for (start, end) in intervals {
+        if start != cursor {
+            bail!("safetensors data layout has an overlap or hole at byte {cursor} (next range {start}..{end})");
+        }
+        cursor = end;
+    }
+    if cursor != data.len() as u64 {
+        bail!("safetensors data layout leaves {} unindexed trailing bytes", data.len() as u64 - cursor);
+    }
+
+    let mut tensors = HashMap::with_capacity(validated.len());
+    for (name, dtype, shape, start, end) in validated {
         let tensor = Tensor::from_raw_buffer(&data[start..end], dtype, &shape, device)
             .with_context(|| format!("reading tensor {name:?}"))?;
         tensors.insert(name, tensor);
@@ -132,6 +159,48 @@ mod tests {
         let buffer = buffer_with_tensor(header, &1.25_f32.to_le_bytes());
         let error = load_buffer(&buffer, &Device::Cpu).unwrap_err().to_string();
         assert!(error.contains("outside"), "{error}");
+    }
+
+    #[test]
+    fn rejects_overlapping_tensor_ranges() {
+        let header = r#"{"a":{"dtype":"F32","shape":[1],"data_offsets":[0,4]},"b":{"dtype":"F32","shape":[1],"data_offsets":[0,4]}}"#;
+        let buffer = buffer_with_tensor(header, &1.25_f32.to_le_bytes());
+        let err = load_buffer(&buffer, &Device::Cpu).unwrap_err().to_string();
+        assert!(err.contains("overlap or hole"), "{err}");
+    }
+
+    #[test]
+    fn rejects_holes_between_tensor_ranges() {
+        let header = r#"{"a":{"dtype":"F32","shape":[1],"data_offsets":[0,4]},"b":{"dtype":"F32","shape":[1],"data_offsets":[8,12]}}"#;
+        let buffer = buffer_with_tensor(header, &[0u8; 12]);
+        let err = load_buffer(&buffer, &Device::Cpu).unwrap_err().to_string();
+        assert!(err.contains("overlap or hole"), "{err}");
+    }
+
+    #[test]
+    fn rejects_unindexed_trailing_bytes() {
+        let header = r#"{"weights":{"dtype":"F32","shape":[1],"data_offsets":[0,4]}}"#;
+        let buffer = buffer_with_tensor(header, &[0u8; 8]);
+        let err = load_buffer(&buffer, &Device::Cpu).unwrap_err().to_string();
+        assert!(err.contains("unindexed trailing bytes"), "{err}");
+    }
+
+    #[test]
+    fn accepts_unordered_contiguous_ranges_and_empty_tensors() {
+        let header = r#"{"second":{"dtype":"F32","shape":[1],"data_offsets":[4,8]},"empty":{"dtype":"F32","shape":[0],"data_offsets":[4,4]},"first":{"dtype":"F32","shape":[1],"data_offsets":[0,4]}}"#;
+        let mut data = 1.25_f32.to_le_bytes().to_vec();
+        data.extend(2.5_f32.to_le_bytes());
+        let tensors = load_buffer(&buffer_with_tensor(header, &data), &Device::Cpu).unwrap();
+        assert_eq!(tensors["first"].to_vec1::<f32>().unwrap(), vec![1.25]);
+        assert_eq!(tensors["second"].to_vec1::<f32>().unwrap(), vec![2.5]);
+        assert_eq!(tensors["empty"].dims(), &[0]);
+    }
+
+    #[test]
+    fn rejects_oversized_header_before_parsing_json() {
+        let buffer = (100_000_001u64).to_le_bytes().to_vec();
+        let err = load_buffer(&buffer, &Device::Cpu).unwrap_err().to_string();
+        assert!(err.contains("100 MB safety limit"), "{err}");
     }
 
     #[test]

@@ -100,13 +100,18 @@ on shared runners.
 
 ## Length-bucketed inference (no retraining)
 
-The boundary architecture offers an **opt-in** `GLiNER2::extract_batch_bucketed`
-method for document batches whose encoded token lengths vary substantially.
-It sorts inputs by prepared token count, groups at most 8 similarly sized
-documents, requires no more than 25% length spread, and caps
-`batch_size * max_tokens^2` at 1,000,000 for multi-input groups. Extraction
-results return in the caller's original order. Other model architectures
-retain their existing batch path.
+The boundary architecture now uses **adaptive length bucketing by default**
+in `GLiNER2::extract_batch` for sufficiently heterogeneous inputs (at least
+one-third estimated reduction in padded quadratic attention work), and
+for large batches of at least 16 documents. The explicit
+`GLiNER2::extract_batch_bucketed` method remains available to force buckets.
+
+The existing bucket implementation sorts by prepared token count, groups at
+most 8 similarly sized documents, requires no more than 25% length spread,
+and caps `batch_size * max_tokens^2` at 1,000,000 for multi-input groups.
+The adaptive planner leaves smaller near-uniform batches on the original
+single-pass encoder path. Extraction results retain caller order. Span-model
+checkpoints keep their existing batching behavior.
 
 This avoids padding every document to the longest sequence, which wastes
 bidirectional attention computation and intermediate memory. The weights,
@@ -138,6 +143,16 @@ confidence fields and offsets. These are end-to-end batch-throughput timings
 excluding checkpoint loading, not single-document latencies. Smaller,
 uniform-length batches may benefit little or not at all; hardware, model,
 and batch composition can materially change the outcome.
+
+**Pinned automated admission, October 26, 2026:** mixed 16-document
+batch speedups on the final adaptive policy of **2.85x**, **2.64x**, and
+**2.89x** were observed in three separate GitHub-hosted A/B runs, with
+**identical SHA-256 complete inference outputs**. The exact-head run is
+[40407644493](https://github.com/laurajoyhutchins/gliner-rs/actions/runs/40407644493).
+The 16-document uniform case ranged from ~4% slower to essentially
+equal across shared runners. See [ADAPTIVE_BATCH.md](ADAPTIVE_BATCH.md)
+for the deterministic routing rule and source-bound verification. There
+is no claim of improving single-document latency.
 
 Other no-retraining experiments were explicitly rejected: the bounded
 relative-position cache plus unpadded fast path measured **0.96×** the

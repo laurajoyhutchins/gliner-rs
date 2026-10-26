@@ -361,15 +361,18 @@ fn argmax(xs: &[f32]) -> usize {
     best
 }
 
-/// Use the existing bounded length buckets only if they save at least
-/// one third of the estimated padded quadratic-attention work. This is a
-/// conservative *choice between two existing encoder paths*, not a new
-/// kernel or an estimate of total model latency. Unknown/identical sizes
-/// remain on the original single-pass execution path.
+/// Reuse existing bounded buckets for significant padded-attention savings
+/// or for large batches (>=16) where the real-checkpoint A/B evidence shows
+/// smaller passes avoid an adverse large-batch CPU execution cost. Both
+/// routes preserve the model, weights and caller ordering; no new kernel.
 fn adaptive_length_groups(lengths: &[usize]) -> Option<Vec<Vec<usize>>> {
     if lengths.len() < 2 { return None; }
     let groups = length_bucket_groups(lengths);
     if groups.len() < 2 { return None; }
+    // Measured 16-row homogeneous batches: forced 8-row groups avoided a
+    // reproducible candidate default regression while preserving full JSON.
+    // Do not split 9–15 homogeneous rows merely for the 8-row size cap.
+    if lengths.len() >= 16 { return Some(groups); }
     let square = |n: usize| {
         let n = n as u128;
         n.saturating_mul(n)
@@ -691,7 +694,8 @@ impl BoundaryModel {
     /// [`Self::extract`] for several documents against the same schema.
     /// Preserve a single padded encoder pass for similar lengths, but avoid
     /// excessive padding for heterogeneous input lengths when the existing
-    /// bounded buckets predict >= 1/3 less quadratic attention work.
+    /// bounded buckets predict >= 1/3 less quadratic attention work. Large
+    /// batches (>=16) use 8-row bounded groups after pinned throughput proof.
     /// Extraction results retain caller order and source offsets.
     pub fn extract_batch(&self, texts: &[&str], schema: &Schema, opts: &ExtractOptions) -> Result<Vec<Value>> {
         if texts.is_empty() { return Ok(Vec::new()); }
@@ -2018,6 +2022,8 @@ mod adaptive_batch_plan_tests {
         assert!(adaptive_length_groups(&[]).is_none());
         assert!(adaptive_length_groups(&[18]).is_none());
         assert!(adaptive_length_groups(&[64, 64, 64, 64, 64, 64, 64, 64, 64]).is_none());
+        assert!(adaptive_length_groups(&[64; 15]).is_none());
+        assert_eq!(adaptive_length_groups(&[64; 16]).unwrap().len(), 2);
         assert!(adaptive_length_groups(&[100, 115, 120, 125]).is_none());
     }
 

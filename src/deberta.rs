@@ -62,6 +62,26 @@ fn fuse_qkv(query: &Linear, key: &Linear, value: &Linear) -> Result<Linear> {
     Ok(Linear::new(weight, bias))
 }
 
+/// Experimental layout-only FFN optimization.
+////
+//// Candle's standard Linear uses the logical transpose of its [out, in]
+//// weight at every forward. Materialize that transpose once at load time,
+//// then represent the original logical weight as a view. This preserves
+//// dimensions, bias and the existing Candle GEMM path; it changes only
+//// operand strides/storage layout. It must not become default without
+//// an exact-output whole-model A/B demonstration.
+fn prepare_ffn_linear(linear: Linear) -> Result<Linear> {
+    #[cfg(feature = "prepacked-ffn")]
+    {
+        let transposed = linear.weight().t()?.contiguous()?;
+        Ok(Linear::new(transposed.t()?, linear.bias().cloned()))
+    }
+    #[cfg(not(feature = "prepacked-ffn"))]
+    {
+        Ok(linear)
+    }
+}
+
 fn split_heads(x: &Tensor, num_heads: usize, head_dim: usize) -> Result<Tensor> {
     let (b, t, _) = x.dims3()?;
     x.reshape((b, t, num_heads, head_dim))?
@@ -101,8 +121,8 @@ impl DebertaV2 {
                 qkv_proj: fuse_qkv(&query_proj, &key_proj, &value_proj)?,
                 attn_dense: linear(h, h, l.pp("attention.output.dense"))?,
                 attn_norm: layer_norm(h, eps, l.pp("attention.output.LayerNorm"))?,
-                intermediate: linear(h, cfg.intermediate_size, l.pp("intermediate.dense"))?,
-                output_dense: linear(cfg.intermediate_size, h, l.pp("output.dense"))?,
+                intermediate: prepare_ffn_linear(linear(h, cfg.intermediate_size, l.pp("intermediate.dense"))?)?,
+                output_dense: prepare_ffn_linear(linear(cfg.intermediate_size, h, l.pp("output.dense"))?)?,
                 output_norm: layer_norm(h, eps, l.pp("output.LayerNorm"))?,
                 pos_q,
                 pos_k,
@@ -250,6 +270,37 @@ mod tests {
         Ok(())
     }
 
+
+
+    #[test]
+    fn prepared_ffn_gemm_matches_regular_candle_linear() -> candle_core::Result<()> {
+        let dev = &Device::Cpu;
+        for with_bias in [false, true] {
+            let weights = Tensor::from_vec(
+                (0..28).map(|i| (i as f32 - 11.5) * 0.03125).collect(), (7, 4), dev)?;
+            let bias = if with_bias { Some(Tensor::from_vec((0..7).map(|i| i as f32 / 9.0).collect(), 7, dev)?) } else { None };
+            let regular = Linear::new(weights, bias);
+            let prepared = super::prepare_ffn_linear(regular.clone())?;
+            let inputs = [
+                Tensor::from_vec((0..20).map(|i| i as f32 / 7.0 - 1.4).collect(), (5, 4), dev)?,
+                Tensor::from_vec((0..40).map(|i| i as f32 / 7.0 - 1.4).collect(), (2, 5, 4), dev)?,
+            ];
+            for input in &inputs {
+                let original = regular.forward(input)?.flatten_all()?.to_vec1::<f32>()?;
+                let observed = prepared.forward(input)?.flatten_all()?.to_vec1::<f32>()?;
+                assert_eq!(original.len(), observed.len());
+                for (a, b) in original.iter().zip(&observed) {
+                    assert!((a - b).abs() < 1e-5, "prepacked ffn changed value: {a} != {b}");
+                }
+            }
+            #[cfg(feature = "prepacked-ffn")]
+            {
+                assert!(prepared.weight().t()?.is_contiguous(),
+                    "FFN candidate must have truly prepacked GEMM operand");
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn buckets_are_identity_near_zero() {

@@ -71,6 +71,9 @@ default = ["cli", "server"]
 cli = ["dep:clap", "dep:rustyline"]
 # The HTTP server (`gliner_rs::server`, `gliner serve`).
 server = ["dep:ntex", "dep:tokio", "dep:ntex-http"]
+# Native CPU FFN weight transpose-prepacking trial only. Disabled by default;
+# no new dependencies or tensor math, and not enabled by the WebAssembly build.
+prepacked-ffn = []
 cuda = ["candle-core/cuda", "candle-nn/cuda"]
 # ~5-10% faster CPU matmul on machines with Intel MKL installed (e.g. via
 # oneAPI). No effect on systems without it: `intel-mkl-src`'s build script

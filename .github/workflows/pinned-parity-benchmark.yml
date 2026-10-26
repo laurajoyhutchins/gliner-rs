@@ -1,6 +1,12 @@
 name: Pinned Python-Rust GLiNER2.5 parity benchmark
 
 on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'benchmarks/compare.py'
+      - 'benchmarks/cases.json'
+      - '.github/workflows/pinned-parity-benchmark.yml'
   workflow_dispatch:
     inputs:
       rounds:
@@ -68,7 +74,7 @@ jobs:
             --candidate target/release/gliner \
             --model-dir checkpoint \
             --checkpoint-sha256 4ee982787ace270d4bf15dbcb28ced38e0aa201372347114ceedd6336055de2b \
-            --pairs 2 --samples "${{ inputs.rounds }}" --threads "${{ inputs.threads }}" \
+            --pairs 1 --samples "${{ inputs.rounds || '2' }}" --threads "${{ inputs.threads || '2' }}" \
             --out rust-revision-benchmark.json
       - name: Run semantic parity and warm CPU timing
         env:
@@ -79,8 +85,9 @@ jobs:
             --model-dir checkpoint \
             --python-source upstream \
             --checkpoint-sha256 4ee982787ace270d4bf15dbcb28ced38e0aa201372347114ceedd6336055de2b \
-            --rounds "${{ inputs.rounds }}" --threads "${{ inputs.threads }}" \
-            --warmups 2 --out gliner-parity-benchmark.json
+            --rounds "${{ inputs.rounds || '2' }}" --threads "${{ inputs.threads || '2' }}" \
+            --require-full-parity \
+            --warmups 1 --out gliner-parity-benchmark.json
       - name: Upload independently generated evidence
         if: always()
         uses: actions/upload-artifact@v4

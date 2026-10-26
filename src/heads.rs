@@ -1027,6 +1027,9 @@ pub struct RelationPair {
     pub relation: usize,
     pub head: (usize, usize),
     pub tail: (usize, usize),
+    /// Calibrated candidate probabilities carried from typed pair proposal.
+    pub head_prob: f32,
+    pub tail_prob: f32,
 }
 
 pub struct RelationScorer {

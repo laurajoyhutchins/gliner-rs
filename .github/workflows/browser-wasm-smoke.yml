@@ -33,7 +33,7 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Install Chromium matching pinned Playwright
         working-directory: website/browser-tests
-        run: npx playwright install --with-deps chromium
+        run: npx playwright install --with-deps --only-shell chromium
       - name: Exercise actual wasm-bindgen module and real immutable checkpoint
         working-directory: website/browser-tests
         env:

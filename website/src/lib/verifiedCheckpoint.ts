@@ -5,7 +5,11 @@
  */
 import { sha256 } from "@noble/hashes/sha2.js";
 import type { CheckpointFile, CheckpointLock } from "./checkpointLocks";
-import { pinnedCheckpointUrl } from "./checkpointLocks";
+
+/** An immutable HF resolve URL: no mutable main references in the downloader. */
+export function pinnedCheckpointUrl(lock: CheckpointLock, file: CheckpointFile): string {
+  return `https://huggingface.co/${lock.repo}/resolve/${lock.revision}/${file}`;
+}
 
 const CACHE_NAME = "gliner-rs-verified-checkpoints-v2";
 const MAX_BYTES = 2_500_000_000; // all supported browser model files are below this bound
@@ -112,7 +116,7 @@ export async function fetchVerifiedCheckpoint(
     } catch (error) {
       if (signal?.aborted) throw error;
       // A cache read failure or digest mismatch must never be admitted.
-      await cache.delete(url);
+      try { await cache.delete(url); } catch { /* Cache API failures cannot block a clean retry. */ }
     }
   }
 

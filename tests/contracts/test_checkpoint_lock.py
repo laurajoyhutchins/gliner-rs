@@ -29,6 +29,22 @@ class CheckpointLockContractTest(unittest.TestCase):
         Draft202012Validator.check_schema(cls.schema)
         cls.validator = Draft202012Validator(cls.schema)
 
+    def test_browser_manifest_is_complete_and_uses_exact_repository_contract(self):
+        import re
+
+        root = SCHEMA_PATH.parents[1]
+        locks = json.loads((root / "website/src/lib/checkpoint-locks.json").read_text(encoding="utf-8"))
+        declared = set(re.findall(
+            r'hfRepo:\\s*"([^"]+)"',
+            (root / "website/src/lib/models.ts").read_text(encoding="utf-8"),
+        ))
+        repos = [lock["repo"] for lock in locks]
+        self.assertEqual(len(repos), len(set(repos)), "duplicate checkpoint locks")
+        self.assertEqual(set(repos), declared, "every browser model must be pinned")
+        for lock in locks:
+            with self.subTest(repo=lock["repo"]):
+                self.validator.validate(lock)
+
     def test_complete_fixture_is_structurally_valid(self):
         self.validator.validate(EXAMPLE)
 

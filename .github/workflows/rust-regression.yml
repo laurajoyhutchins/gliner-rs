@@ -5,6 +5,7 @@ on:
       - 'src/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
+      - 'rust-toolchain.toml'
       - 'benchmarks/**'
       - 'contracts/**'
       - 'tests/contracts/**'

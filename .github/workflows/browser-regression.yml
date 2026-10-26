@@ -3,10 +3,16 @@ name: Browser checkpoint regression
 on:
   pull_request:
     paths:
+      - 'src/**'
+      - '.cargo/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
       - 'website/**'
       - 'contracts/checkpoint-lock.schema.json'
       - 'tests/contracts/**'
       - '.github/workflows/browser-regression.yml'
+      - '.github/workflows/wasm-regenerate.yml'
   workflow_dispatch:
 
 permissions:
@@ -15,9 +21,16 @@ permissions:
 jobs:
   verified-browser-models:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.98.0'
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Install pinned wasm-pack
+        run: cargo install --locked wasm-pack --version "$(cat website/wasm-pack-version)"
       - uses: pnpm/action-setup@v4
         with:
           version: '10'
@@ -29,7 +42,10 @@ jobs:
       - name: Install website dependencies from lockfile
         working-directory: website
         run: pnpm install --frozen-lockfile
-      - name: Run browser model lifecycle and byte-integrity regressions
+      - name: Reject stale committed WebAssembly against Rust source
+        working-directory: website
+        run: pnpm build:wasm:check
+      - name: Run browser model lifecycle and artifact drift regressions
         working-directory: website
         run: pnpm test
       - name: Typecheck website code

@@ -5,7 +5,7 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 
 use crate::heads::RelationPair;
 
@@ -182,20 +182,33 @@ pub fn propose_relation_pairs(
     spans: &[(usize, usize)],
     relations: &[RelationRoles],
     settings: &RelationProposalSettings,
-) -> Vec<RelationPair> {
+) -> Result<Vec<RelationPair>> {
     // Secondary order: (start, end, flat index); primary: probability desc.
-    let select = |query: usize, take: usize| -> Vec<(f32, (usize, usize))> {
-        let Some(row) = probs.get(query) else { return Vec::new() };
+    // A malformed probability matrix must not panic or silently omit edges.
+    let select = |query: usize, take: usize| -> Result<Vec<(f32, (usize, usize))>> {
+        let row = probs.get(query).with_context(|| {
+            format!("relation query {query} is absent from {} probability rows", probs.len())
+        })?;
+        if row.len() != spans.len() {
+            bail!(
+                "relation query {query} has {} probabilities for {} candidate spans",
+                row.len(),
+                spans.len()
+            );
+        }
+        if row.iter().any(|score| !score.is_finite()) {
+            bail!("relation query {query} contains non-finite probabilities");
+        }
         let mut valid: Vec<usize> = (0..spans.len()).filter(|&c| row[c] >= settings.argument_threshold).collect();
         valid.sort_by(|&a, &b| spans[a].cmp(&spans[b]).then(a.cmp(&b)));
         valid.sort_by(|&a, &b| row[b].total_cmp(&row[a]));
-        valid.into_iter().take(take).map(|c| (row[c], spans[c])).collect()
+        Ok(valid.into_iter().take(take).map(|c| (row[c], spans[c])).collect())
     };
 
     let mut out = Vec::new();
     for (relation, roles) in relations.iter().enumerate() {
-        let heads = select(roles.head_query, settings.heads_per_relation);
-        let tails = select(roles.tail_query, settings.tails_per_relation);
+        let heads = select(roles.head_query, settings.heads_per_relation)?;
+        let tails = select(roles.tail_query, settings.tails_per_relation)?;
         let mut pairs: Vec<(f32, (usize, usize), (usize, usize))> = Vec::new();
         for &(hp, hspan) in &heads {
             for &(tp, tspan) in &tails {
@@ -212,7 +225,7 @@ pub fn propose_relation_pairs(
                 .map(|(_, head, tail)| RelationPair { relation, head, tail }),
         );
     }
-    out
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------
@@ -390,4 +403,52 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].tail.0, "Acme Corp");
     }
+    fn relation_settings() -> RelationProposalSettings {
+        RelationProposalSettings {
+            heads_per_relation: 1,
+            tails_per_relation: 1,
+            pair_cap: 1,
+            argument_threshold: 0.5,
+        }
+    }
+
+    #[test]
+    fn relation_proposal_preserves_valid_head_tail_selection() {
+        let spans = [(0, 2), (4, 7)];
+        let probs = [vec![0.9, 0.1], vec![0.1, 0.8]];
+        let roles = [RelationRoles { head_query: 0, tail_query: 1 }];
+        let pairs = propose_relation_pairs(&probs, &spans, &roles, &relation_settings()).unwrap();
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].relation, 0);
+        assert_eq!(pairs[0].head, spans[0]);
+        assert_eq!(pairs[0].tail, spans[1]);
+    }
+
+    #[test]
+    fn relation_proposal_rejects_short_probability_rows() {
+        let spans = [(0, 2), (4, 7)];
+        let probs = [vec![0.9], vec![0.1, 0.8]];
+        let roles = [RelationRoles { head_query: 0, tail_query: 1 }];
+        let err = propose_relation_pairs(&probs, &spans, &roles, &relation_settings()).unwrap_err().to_string();
+        assert!(err.contains("probabilities for 2 candidate spans"), "{err}");
+    }
+
+    #[test]
+    fn relation_proposal_rejects_missing_query_rows() {
+        let spans = [(0, 2)];
+        let probs = [vec![0.9]];
+        let roles = [RelationRoles { head_query: 0, tail_query: 2 }];
+        let err = propose_relation_pairs(&probs, &spans, &roles, &relation_settings()).unwrap_err().to_string();
+        assert!(err.contains("relation query 2 is absent"), "{err}");
+    }
+
+    #[test]
+    fn relation_proposal_rejects_nonfinite_probabilities() {
+        let spans = [(0, 2)];
+        let probs = [vec![f32::NAN], vec![0.8]];
+        let roles = [RelationRoles { head_query: 0, tail_query: 1 }];
+        let err = propose_relation_pairs(&probs, &spans, &roles, &relation_settings()).unwrap_err().to_string();
+        assert!(err.contains("non-finite"), "{err}");
+    }
+
 }

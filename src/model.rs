@@ -1206,7 +1206,7 @@ impl BoundaryModel {
             pair_cap: cfg.relation_pair_cap,
             argument_threshold: cfg.relation_argument_proposal_threshold,
         };
-        let pairs = propose_relation_pairs(&probs, &scores.spans, &roles, &settings);
+        let pairs = propose_relation_pairs(&probs, &scores.spans, &roles, &settings)?;
         if pairs.is_empty() {
             return Ok(Vec::new());
         }

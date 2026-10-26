@@ -228,7 +228,7 @@ test("measure real browser cold-load and bounded switching footprints", {
     for (const process of value.processInfo) {
       try {
         const status = readFileSync(`/proc/${process.id}/status`, "utf8");
-        const match = /^VmRSS:\\s+(\\d+)\\s+kB/m.exec(status);
+        const match = /^VmRSS:\s+(\d+)\s+kB/m.exec(status);
         if (match) total += Number(match[1]) / 1024;
       } catch {
         // A renderer may exit between the CDP snapshot and /proc read.

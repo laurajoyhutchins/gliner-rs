@@ -7,6 +7,7 @@ on:
       - 'tests/server.rs'
       - 'benchmarks/http_batch_parity.py'
       - 'contracts/http-extract-batch.schema.json'
+      - 'contracts/http-extract-batch.odcs.json'
       - 'tests/contracts/test_http_batch.py'
       - '.github/workflows/http-batch-pinned.yml'
   workflow_dispatch:
@@ -31,6 +32,19 @@ jobs:
         run: |
           python -m pip install jsonschema==4.26.0
           python -m unittest discover -s tests/contracts -p 'test_http_batch.py' -v
+      - name: Validate ODCS contract against the official pinned v3.1 schema
+        run: |
+          python - <<'PY'
+          import json, urllib.request
+          from jsonschema import Draft201909Validator
+          url = 'https://raw.githubusercontent.com/bitol-io/open-data-contract-standard/d3e1cb3e69849e05c9a7522abed9b27fb9af50d7/schema/odcs-json-schema-v3.1.0-20260415.json'
+          with urllib.request.urlopen(url, timeout=30) as response:
+              spec = json.load(response)
+          contract = json.load(open('contracts/http-extract-batch.odcs.json'))
+          Draft201909Validator.check_schema(spec)
+          Draft201909Validator(spec).validate(contract)
+          print('ODCS v3.1.0: official pinned schema validation passed')
+          PY
       - name: Native route regression with mock extractor and admission checks
         run: cargo test --locked --release --test server
       - name: Build exact-head native inference server

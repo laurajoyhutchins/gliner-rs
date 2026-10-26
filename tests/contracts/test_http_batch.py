@@ -17,6 +17,22 @@ class HttpBatchContractTest(unittest.TestCase):
         Draft202012Validator(SCHEMA).validate(request)
         Draft202012Validator({**SCHEMA, "$ref": "#/$defs/response"}).validate(response)
 
+    def test_odcs_companion_matches_json_schema(self):
+        odcs = json.loads((Path(__file__).resolve().parents[2] / "contracts/http-extract-batch.odcs.json").read_text())
+        self.assertEqual(odcs["kind"], "DataContract")
+        self.assertEqual(odcs["apiVersion"], "v3.1.0")
+        request, response = odcs["schema"]
+        self.assertEqual([x["name"] for x in odcs["schema"]], ["BatchExtractRequest", "BatchExtractResponse"])
+        for obj, ref in ((request, SCHEMA["$defs"]["request"]), (response, SCHEMA["$defs"]["response"])):
+            properties = {x["name"]: x for x in obj["properties"]}
+            self.assertEqual(set(properties), set(ref["properties"]))
+            self.assertEqual({k for k, x in properties.items() if x["required"]}, set(ref.get("required", [])))
+            for name, odcs_field in properties.items():
+                json_type = ref["properties"][name]["type"]
+                if isinstance(json_type, list):
+                    json_type = next(x for x in json_type if x != "null")
+                self.assertEqual(odcs_field["logicalType"], json_type, name)
+
     def test_reject_missing_texts_and_invalid_schema_shape(self):
         validator = Draft202012Validator(SCHEMA)
         for request in (

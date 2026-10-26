@@ -287,7 +287,9 @@ A batch shares every schema and option, returns one full result per input in the
 original order, and occupies one slot in the existing serialized scoring queue.
 It accepts 1–64 nonempty documents, up to 16 KiB per document and 64 KiB
 combined UTF-8 text. Requests over the limits fail with 422 before inference.
-The 1 MiB HTTP body limit also applies. The single-text endpoint remains unchanged.
+The 1 MiB HTTP body limit also applies. The single-text endpoint remains unchanged. The cross-repository exchange is
+described in [JSON Schema](contracts/http-extract-batch.schema.json) and the
+[ODCS 3.1 contract](contracts/http-extract-batch.odcs.json).
 
 Fields: `text` (required for the single endpoint), at least one of `entities` / `relations` / `json` / `classify` (same syntax as `--entities`,
 `--relations`, `--json`, `--classify`), and optionally `legacy_structures`, `threshold` (0.5), `spans`, `confidence`,

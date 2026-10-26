@@ -6,6 +6,8 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'benchmarks/**'
+      - 'contracts/**'
+      - 'tests/contracts/**'
       - '.github/workflows/rust-regression.yml'
   workflow_dispatch:
 
@@ -28,6 +30,8 @@ jobs:
         run: python3 -m unittest discover -s benchmarks/regulatory -p 'test_*.py' -v
       - name: Syntax-check real-document benchmarks
         run: python3 -m py_compile benchmarks/regulatory/*.py
+      - name: Checkpoint lock JSON Schema contract tests
+        run: python3 -m unittest discover -s tests/contracts -p 'test_*.py' -v
 
       - name: Offline-independent library regression tests
         run: cargo test --locked --release --lib

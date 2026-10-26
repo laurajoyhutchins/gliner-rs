@@ -294,6 +294,51 @@ lives in the gliner-rs cache directory, `$XDG_CACHE_HOME/gliner-rs` (default
 Set `GLINER_OFFLINE=1` to disable downloading (useful on a constrained connection); resolution
 then fails with an error naming the missing file unless the checkpoint is already fully cached.
 
+### Reproducible, integrity-checked checkpoint downloads
+
+The default cache behavior above is a compatibility mode: it fetches the mutable
+Hugging Face `main` revision and **does not authenticate existing cache files**.
+For engineering evaluations and reproducible deployments, pin a checkpoint and
+its verified file SHA-256 digests with `GLINER_MODEL_LOCK`.
+
+Create a JSON file conforming to
+[`contracts/checkpoint-lock.schema.json`](contracts/checkpoint-lock.schema.json):
+
+```json
+{
+  "version": 1,
+  "repo": "fastino/gliner2.5-multi-v1",
+  "revision": "<40-character immutable commit SHA>",
+  "sha256": {
+    "config.json": "<64-character SHA-256>",
+    "encoder_config/config.json": "<64-character SHA-256>",
+    "tokenizer.json": "<64-character SHA-256>",
+    "model.safetensors": "<64-character SHA-256>"
+  }
+}
+```
+
+Replace every placeholder with a verified value. **The example is not a model
+lock** and does not contain authenticated artifact hashes. Obtain the commit
+revision and digests independently from trusted release/model metadata or
+reviewed artifacts; computing them from the same untrusted download only
+detects later cache corruption and does not establish provenance.
+
+```sh
+export GLINER_MODEL_LOCK=/absolute/path/to/checkpoint.lock.json
+gliner --model-variant multi --entities person --text 'Alice works for Acme.'
+```
+
+The lock must name the selected variant's exact Hugging Face repository.
+Locked downloads use `.../resolve/<revision>/<file>` and are cached under
+`~/.cache/gliner-rs/<model>/<revision>/`. Each cached file is hashed on
+every use, and a newly downloaded file is verified **before** its atomic
+rename. A hash mismatch fails closed with a path-specific error; to recover,
+quarantine the reported file and retry. `GLINER_OFFLINE=1` works for
+complete, verified locked caches, too. An explicit `--model` bypasses
+automatic downloading and the lock, so validate any manually supplied model
+directory separately.
+
 Each binary supports more than one checkpoint (`--model-variant`, see the tables below).
 
 If you already have checkpoints downloaded elsewhere (e.g. via `git lfs` or the `huggingface-cli`),

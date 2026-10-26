@@ -152,17 +152,25 @@ impl EncoderConfig {
 fn parse_encoder_config(encoder_config_json: &str) -> Result<EncoderConfig> {
     let value: serde_json::Value =
         serde_json::from_str(encoder_config_json).context("parsing encoder_config/config.json")?;
-    let model_type = value.get("model_type").and_then(|v| v.as_str()).unwrap_or("deberta-v2");
+    // A missing model_type is legitimate for older DeBERTa checkpoints.
+    // An explicitly unknown or malformed value is not: treating it as
+    // DeBERTa would silently admit an unsupported checkpoint architecture.
+    let model_type = match value.get("model_type") {
+        None => "deberta-v2",
+        Some(serde_json::Value::String(model_type)) => model_type.as_str(),
+        Some(_) => bail!("encoder_config/config.json model_type must be a string"),
+    };
     match model_type {
         "modernbert" => Ok(EncoderConfig::ModernBert(
             serde_json::from_str(encoder_config_json).context("parsing encoder_config/config.json as ModernBERT")?,
         )),
-        _ => {
+        "deberta-v2" => {
             let cfg: DebertaConfig =
                 serde_json::from_str(encoder_config_json).context("parsing encoder_config/config.json as DeBERTa-v2")?;
             validate_deberta(&cfg)?;
             Ok(EncoderConfig::Deberta(cfg))
         }
+        other => bail!("unsupported encoder model_type {other:?}; expected 'deberta-v2' or 'modernbert'"),
     }
 }
 
@@ -267,11 +275,21 @@ fn validate(cfg: &ExtractorConfig, enc: &EncoderConfig) -> Result<()> {
     {
         bail!("unsupported pair reranker configuration (expected rotary endpoints, query-conditioned inside weight, endpoint difference and compat features, span content)");
     }
-    if h.pair_dim % h.multihead_pair_compat_heads != 0 || h.boundary_dim % 2 != 0 || h.pair_dim % 2 != 0 {
-        bail!("pair_dim/boundary_dim incompatible with rotary endpoints or compat heads");
-    }
+    validate_rotary_pair_dimensions(h.pair_dim, h.boundary_dim, h.multihead_pair_compat_heads)?;
     // Encoder-specific validation already ran in `parse_encoder_config`.
     let _ = enc;
+    Ok(())
+}
+
+/// Reject malformed rotary/pair compatibility dimensions before any modulo
+/// operation or tensor construction. Checkpoint input is not trusted to be valid.
+fn validate_rotary_pair_dimensions(pair_dim: usize, boundary_dim: usize, compat_heads: usize) -> Result<()> {
+    if compat_heads == 0 {
+        bail!("multihead_pair_compat_heads must be greater than zero");
+    }
+    if pair_dim == 0 || boundary_dim == 0 || pair_dim % compat_heads != 0 || boundary_dim % 2 != 0 || pair_dim % 2 != 0 {
+        bail!("pair_dim/boundary_dim incompatible with rotary endpoints or compat heads");
+    }
     Ok(())
 }
 
@@ -296,4 +314,40 @@ fn validate_deberta(enc: &DebertaConfig) -> Result<()> {
         bail!("expected hidden_act=gelu, got {:?}", enc.hidden_act);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unknown_encoder_type_is_rejected_instead_of_assuming_deberta() {
+        let err = parse_encoder_config(r#"{"model_type":"other","hidden_size":768}"#)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unsupported encoder model_type"), "{err}");
+    }
+
+    #[test]
+    fn malformed_encoder_type_is_rejected() {
+        let err = parse_encoder_config(r#"{"model_type":null}"#).unwrap_err().to_string();
+        assert!(err.contains("model_type must be a string"), "{err}");
+    }
+
+    #[test]
+    fn missing_encoder_type_still_uses_legacy_deberta_parser() {
+        let err = parse_encoder_config("{}").unwrap_err().to_string();
+        assert!(err.contains("as DeBERTa-v2"), "{err}");
+    }
+
+    #[test]
+    fn invalid_pair_dimensions_return_errors_without_panicking() {
+        assert!(validate_rotary_pair_dimensions(64, 64, 0).is_err());
+        assert!(validate_rotary_pair_dimensions(0, 64, 4).is_err());
+        assert!(validate_rotary_pair_dimensions(64, 0, 4).is_err());
+        assert!(validate_rotary_pair_dimensions(65, 64, 4).is_err());
+        assert!(validate_rotary_pair_dimensions(64, 63, 4).is_err());
+        assert!(validate_rotary_pair_dimensions(64, 64, 3).is_err());
+        assert!(validate_rotary_pair_dimensions(64, 64, 4).is_ok());
+    }
 }

@@ -281,7 +281,7 @@ fn union_max(rows: &[Vec<f32>], n: usize) -> Vec<f32> {
 }
 
 impl DocumentCandidatePool {
-    fn build(&self, boundary: &Tensor, marginals: &Marginals) -> Result<Vec<PooledCandidate>> {
+    fn build(&self, boundary: &Tensor, marginals: &Marginals, forced: &[(usize, usize)]) -> Result<Vec<PooledCandidate>> {
         let n = boundary.dim(0)?;
         let q = marginals.start.len();
         let start_all = tensor_to_vec2(&self.start_projection.forward(boundary)?)?;
@@ -296,11 +296,6 @@ impl DocumentCandidatePool {
         let ends: Vec<usize> = argsort_desc(&union_end).into_iter().take(k).collect();
         // Reverse indexes reuse the already-computed Cartesian compatibility
         // matrix rather than recomputing dot products for retained candidates.
-        let mut start_rank = vec![0usize; n];
-        let mut end_rank = vec![0usize; n];
-        for (rank, &start) in starts.iter().enumerate() { start_rank[start] = rank; }
-        for (rank, &end) in ends.iter().enumerate() { end_rank[end] = rank; }
-
         // Cartesian pairs in (start rank, end rank) order.
         let mut pair_s = Vec::with_capacity(k * k);
         let mut pair_e = Vec::with_capacity(k * k);
@@ -318,7 +313,7 @@ impl DocumentCandidatePool {
 
         // Per-query quota, ranked above every ordinary global score.
         let quota = self.min_pool_per_query.min(pairs);
-        let total = pairs + q * quota;
+        let total = pairs + q * quota + forced.len();
         let mut keys: Vec<usize> = Vec::with_capacity(total);
         let mut scores: Vec<f32> = Vec::with_capacity(total);
         let mut valid: Vec<bool> = Vec::with_capacity(total);
@@ -346,12 +341,29 @@ impl DocumentCandidatePool {
             scores.push(compat[p] + union_start[pair_s[p]] + union_end[pair_e[p]]);
         }
 
+        // The original shared-pool explicit scorer injects all requested spans
+        // at a priority higher than per-query quotas. A forced candidate need
+        // not have an endpoint among the selected top-k boundaries.
+        for &(start, end) in forced {
+            if !(start < end && end < n) {
+                return Err(candle_core::Error::Msg(format!(
+                    "invalid forced span [{start}, {end}) for {n} boundaries"
+                )));
+            }
+            keys.push(start * n + end);
+            scores.push(-MASK_LOGIT);
+            valid.push(true);
+        }
         let selected = deduplicate_pool(&keys, &scores, &valid, self.pool_size, n);
         Ok(selected
             .into_iter()
             .map(|key| {
                 let (start, end) = (key / n, key % n);
-                PooledCandidate { start, end, compat: compat[start_rank[start] * k + end_rank[end]] }
+                PooledCandidate {
+                    start,
+                    end,
+                    compat: dot(&start_all[start], &end_all[end]) * inv_sqrt_d,
+                }
             })
             .collect())
     }
@@ -672,7 +684,7 @@ impl BoundaryHead {
     pub fn forward(&self, text: &Tensor, query: &Tensor) -> Result<BoundaryForward> {
         let boundary = self.boundary_encoder.forward(text)?;
         let marginals = self.query_head.forward(&boundary, text, query)?;
-        let pooled = self.pool.build(&boundary, &marginals)?;
+        let pooled = self.pool.build(&boundary, &marginals, &[])?;
         let q = marginals.start.len();
 
         let learned = if pooled.is_empty() {
@@ -729,8 +741,11 @@ impl BoundaryHead {
         Ok(Some(encoder.forward(&Tensor::cat(&[&starts, &ends], 1)?)?))
     }
 
-    /// `BoundaryHead.score_explicit_spans` for one query: pair logits for
-    /// caller-provided half-open spans, bypassing sparse proposal.
+    /// Source-equivalent `BoundaryHead.score_explicit_spans` for a shared
+    /// candidate-pool checkpoint. Python injects explicit spans into the
+    /// DOCUMENT pool and scores them using `SharedPoolScorer`, not the
+    /// separate per-query pair reranker. The latter can return materially
+    /// different enum confidences even when the chosen texts match.
     pub fn score_explicit_spans(
         &self,
         fwd: &BoundaryForward,
@@ -742,95 +757,29 @@ impl BoundaryHead {
         if spans.is_empty() {
             return Ok(Vec::new());
         }
-        let device = fwd.boundary.device();
-        let n_boundaries = fwd.boundary.dim(0)?;
-        let n_words = text.dim(0)?;
-        let c = spans.len();
-        let q_row = query.get(query_index)?.unsqueeze(0)?; // [1, H]
-        let clamp = |x: usize| x.min(n_boundaries - 1);
-        let s_idx = u32_tensor(spans.iter().map(|s| clamp(s.0)), device)?;
-        let e_idx = u32_tensor(spans.iter().map(|s| clamp(s.1)), device)?;
-        let b_start = fwd.boundary.index_select(&s_idx, 0)?;
-        let b_end = fwd.boundary.index_select(&e_idx, 0)?;
-
-        let rotated = |proj: &Linear, states: &Tensor, positions: &mut dyn Iterator<Item = usize>| -> Result<Vec<Vec<f32>>> {
-            let mut rows = tensor_to_vec2(&proj.forward(states)?)?;
-            for (row, pos) in rows.iter_mut().zip(positions) {
-                rotate(row, pos, self.rotary_base);
-            }
-            Ok(rows)
-        };
-        let row_vec = |t: Tensor| -> Result<Vec<f32>> { t.squeeze(0)?.to_vec1::<f32>() };
-
-        // Proposal prior (marginal-free compatibility).
-        let prop = &self.proposer;
-        let ps = rotated(&prop.start_pair_projection, &b_start, &mut spans.iter().map(|s| clamp(s.0)))?;
-        let pe = rotated(&prop.end_key_projection, &b_end, &mut spans.iter().map(|s| clamp(s.1)))?;
-        let prop_gate = interleaved_gate(&row_vec(prop.start_query_projection.forward(&q_row)?)?);
-        let inv_sqrt_d = 1.0 / (self.boundary_dim as f32).sqrt();
-
-        // Reranker endpoints.
-        let ps_ = &self.pair_scorer;
-        let ss = rotated(&ps_.start_endpoint_projection, &b_start, &mut spans.iter().map(|s| clamp(s.0)))?;
-        let se = rotated(&ps_.end_endpoint_projection, &b_end, &mut spans.iter().map(|s| clamp(s.1)))?;
-        let gate = interleaved_gate(&row_vec(ps_.query_gate.forward(&q_row)?)?);
-        let p = ps_.pair_dim;
-        let head_width = p / ps_.compat_heads;
-
-        let mut per_head = Vec::with_capacity(c * ps_.compat_heads);
-        let mut difference = Vec::with_capacity(c * 2 * p);
-        let mut prior = Vec::with_capacity(c);
-        for i in 0..c {
-            for h in 0..ps_.compat_heads {
-                let lo = h * head_width;
-                per_head.push((lo..lo + head_width).map(|k| ss[i][k] * gate[k] * se[i][k]).sum::<f32>());
-            }
-            difference.extend((0..p).map(|k| ss[i][k] - se[i][k]));
-            difference.extend((0..p).map(|k| (ss[i][k] - se[i][k]).abs()));
-            prior.push((0..self.boundary_dim).map(|k| ps[i][k] * prop_gate[k] * pe[i][k]).sum::<f32>() * inv_sqrt_d);
+        let q = query.dim(0)?;
+        if query_index >= q {
+            return Err(candle_core::Error::Msg(format!("invalid explicit-span query {query_index} of {q}")));
         }
-        let per_head = Tensor::from_vec(per_head, (c, ps_.compat_heads), device)?;
-        let compat = ps_.compat_mix.forward(&per_head)?.squeeze(1)?.to_vec1::<f32>()?;
-        let difference = Tensor::from_vec(difference, (c, 2 * p), device)?;
-        let difference = ps_.endpoint_difference_projection.forward(&difference)?.squeeze(1)?.to_vec1::<f32>()?;
+        if spans.len() > self.pool.pool_size {
+            return Err(candle_core::Error::Msg(format!(
+                "explicit spans exceed shared candidate pool capacity {}",
+                self.pool.pool_size
+            )));
+        }
 
-        // Span content.
-        let values = ps_.content_value_projection.forward(text)?;
-        let zeros = Tensor::zeros((1, values.dim(1)?), DType::F32, device)?;
-        let prefix = Tensor::cat(&[&zeros, &values.cumsum(0)?], 0)?;
-        let lengths: Vec<f32> = spans.iter().map(|s| s.1.saturating_sub(s.0).max(1) as f32).collect();
-        let length_t = Tensor::from_vec(lengths.clone(), (c, 1), device)?;
-        let content = (prefix.index_select(&e_idx, 0)? - prefix.index_select(&s_idx, 0)?)?.broadcast_div(&length_t)?;
-        let content = ps_.content_layer_norm.forward(&content)?;
-        let content_bias = ps_.content_bias.forward(&content)?.squeeze(1)?.to_vec1::<f32>()?;
-        let content = tensor_to_vec2(&content)?;
-        let coefficient = row_vec(ps_.content_query_projection.forward(&q_row)?)?;
-        let content_scale = 1.0 / (coefficient.len() as f32).sqrt();
-
-        let inside_weight = row_vec(ps_.inside_weight.forward(&q_row)?)?[0];
-        let length_coeff = row_vec(ps_.length_query_projection.forward(&q_row)?)?;
-        let tl = n_words.max(1) as f32;
-        let m = &fwd.marginals;
-        let inv_sqrt_p = 1.0 / (p as f32).sqrt();
-
-        Ok((0..c)
-            .map(|i| {
-                let (s, e) = (clamp(spans[i].0), clamp(spans[i].1));
-                let mut score = compat[i] * inv_sqrt_p + difference[i];
-                score += m.start[query_index][s] + m.end[query_index][e] + prior[i];
-                score += content[i].iter().zip(&coefficient).map(|(a, b)| a * b).sum::<f32>() * content_scale;
-                score += content_bias[i];
-                if self.use_inside_evidence {
-                    let pre = &m.inside_prefix[query_index];
-                    let interval = pre[e] - pre[s] + m.inside_mean[query_index] * (e as f32 - s as f32);
-                    score += inside_weight * (interval / lengths[i].sqrt());
-                }
-                let len = lengths[i];
-                let feats = [len.ln_1p(), len / tl, 1.0 / len.sqrt()];
-                score += feats.iter().zip(&length_coeff).map(|(a, b)| a * b).sum::<f32>();
-                score
-            })
-            .collect())
+        let pooled = self.pool.build(&fwd.boundary, &fwd.marginals, spans)?;
+        let learned = self.scorer.forward(&fwd.boundary, text, query, &pooled)?;
+        spans.iter().map(|&(start, end)| {
+            let i = pooled.iter().position(|cand| (cand.start, cand.end) == (start, end))
+                .ok_or_else(|| candle_core::Error::Msg(format!(
+                    "explicit span [{start}, {end}) missing after shared-pool injection"
+                )))?;
+            Ok(learned[i][query_index]
+                + fwd.marginals.start[query_index][start]
+                + fwd.marginals.end[query_index][end]
+                + self.inside_term(&fwd.marginals, query_index, start, end))
+        }).collect()
     }
 }
 

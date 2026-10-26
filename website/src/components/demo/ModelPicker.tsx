@@ -4,6 +4,7 @@ import type { ModelDef } from "../../lib/models";
 import {
   type DownloadProgress,
   availableLocally,
+  automaticResumeDisabled,
   clearModelCache,
   currentModel,
   ensureLocalLibraryResumeAttempted,
@@ -16,6 +17,7 @@ import {
   selectLocalLibrary,
   selectLocalModel,
   selectModel,
+  unloadModel,
   type LoadedModel,
 } from "../../lib/gliner";
 
@@ -155,15 +157,15 @@ export function ModelPicker(props: { models: ModelDef[]; onLoaded: (m: LoadedMod
   // current model changes; each branch is a no-op once it's already
   // satisfied.
   createEffect(
-    () => [localLibrary(), currentModel()] as const,
-    ([lib, existing]) => {
+    () => [localLibrary(), currentModel(), automaticResumeDisabled()] as const,
+    ([lib, existing, resumeDisabled]) => {
       // Not gated on last session's preferred source — a local directory
       // always wins when both have the checkpoint, so it's worth checking
       // even if Hugging Face was picked last time. Idempotent; only the
       // first call in a session does anything.
       ensureLocalLibraryResumeAttempted();
 
-      if (busy()) return;
+      if (busy() || resumeDisabled) return;
 
       const matches = lib ? availableLocally(lib, props.models) : [];
       if (matches.length > 0 && !(loadedKey() && preferredSource() === "local")) {
@@ -242,6 +244,16 @@ export function ModelPicker(props: { models: ModelDef[]; onLoaded: (m: LoadedMod
             <Button variant="primary" disabled={busy()} onClick={load}>
               {busy() ? "Loading…" : loadedKey() === selected().key && preferredSource() === "hf" ? "Reload" : "Download & load"}
             </Button>
+            <Show when={currentModel()}>
+              <button
+                type="button"
+                disabled={busy()}
+                onClick={() => { unloadModel(); setError(null); setProgress(null); }}
+                class="text-xs text-muted underline decoration-dotted hover:text-ink disabled:opacity-40"
+              >
+                unload active model
+              </button>
+            </Show>
             <button
               type="button"
               disabled={busy()}

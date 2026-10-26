@@ -1,3 +1,6 @@
+# This workflow compares reference semantics, including confidence metadata.
+# A historical Rust/Rust benchmark that requires identical outputs belongs in
+# a separate controlled performance experiment, not a changed-output parity gate.
 name: Pinned Python-Rust GLiNER2.5 parity benchmark
 
 on:
@@ -41,15 +44,6 @@ jobs:
           python-version: '3.13'
       - name: Build exact Rust candidate
         run: cargo build --release --locked --bin gliner
-      - name: Checkout exact pre-optimization Rust baseline
-        uses: actions/checkout@v4
-        with:
-          repository: apiplant/gliner-rs
-          ref: c5c65948478d687190f9c83fcc51d3afa15b5f2a
-          path: rust-baseline
-          persist-credentials: false
-      - name: Build baseline Rust inference engine
-        run: cargo build --release --locked --bin gliner --manifest-path rust-baseline/Cargo.toml
       - name: Install reference Python stack
         run: |
           python -m pip install --index-url https://download.pytorch.org/whl/cpu torch==2.10.0
@@ -67,15 +61,6 @@ jobs:
           )
           PY
           printf '%s  %s\n' '4ee982787ace270d4bf15dbcb28ced38e0aa201372347114ceedd6336055de2b' checkpoint/model.safetensors | sha256sum --check
-      - name: Compare original and candidate Rust whole-model latency
-        run: |
-          python benchmarks/compare_rust_revisions.py \
-            --baseline rust-baseline/target/release/gliner \
-            --candidate target/release/gliner \
-            --model-dir checkpoint \
-            --checkpoint-sha256 4ee982787ace270d4bf15dbcb28ced38e0aa201372347114ceedd6336055de2b \
-            --pairs 1 --samples "${{ inputs.rounds || '2' }}" --threads "${{ inputs.threads || '2' }}" \
-            --out rust-revision-benchmark.json
       - name: Run semantic parity and warm CPU timing
         env:
           PYTHONUNBUFFERED: '1'
@@ -95,8 +80,6 @@ jobs:
           name: gliner-rs-pinned-reference-parity
           path: |
             gliner-parity-benchmark.json
-            rust-revision-benchmark.json
-            rust-revision-benchmark.*.log
             gliner-parity-benchmark.rust.log
           if-no-files-found: warn
           retention-days: 7

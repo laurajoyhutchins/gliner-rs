@@ -1,0 +1,67 @@
+name: Pinned HTTP adaptive batch conformance
+on:
+  pull_request:
+    paths:
+      - 'src/server.rs'
+      - 'src/model.rs'
+      - 'tests/server.rs'
+      - 'benchmarks/http_batch_parity.py'
+      - 'contracts/http-extract-batch.schema.json'
+      - 'tests/contracts/test_http_batch.py'
+      - '.github/workflows/http-batch-pinned.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  real-http-batch:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.98.0'
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Validate batch JSON Schema and representative requests
+        run: |
+          python -m pip install jsonschema==4.26.0
+          python -m unittest discover -s tests/contracts -p 'test_http_batch.py' -v
+      - name: Native route regression with mock extractor and admission checks
+        run: cargo test --locked --release --test server
+      - name: Build exact-head native inference server
+        run: cargo build --release --locked --bin gliner
+      - name: Acquire checkpoint at immutable revision
+        run: |
+          python -m pip install huggingface_hub==1.33.0
+          python - <<'PY'
+          from huggingface_hub import snapshot_download
+          snapshot_download(
+              repo_id='fastino/gliner2.5-small-v1',
+              revision='df5910e44bc4ffdb0d95399a83b0ca4516349aa5',
+              local_dir='checkpoint',
+              allow_patterns=['config.json', 'encoder_config/config.json', 'tokenizer.json', 'model.safetensors'],
+          )
+          PY
+          printf '%s  %s\n' '4ee982787ace270d4bf15dbcb28ced38e0aa201372347114ceedd6336055de2b' checkpoint/model.safetensors | sha256sum --check
+      - name: Fail closed on any model-backed HTTP batch/serial JSON mismatch
+        run: |
+          python benchmarks/http_batch_parity.py \
+            --rust-bin target/release/gliner \
+            --model-dir checkpoint \
+            --checkpoint-sha256 4ee982787ace270d4bf15dbcb28ced38e0aa201372347114ceedd6336055de2b \
+            --out http-batch-proof.json --threads 2
+      - name: Preserve source/run-bound proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pinned-http-batch-conformance
+          path: |
+            http-batch-proof.json
+            http-batch-proof.server.log
+          if-no-files-found: warn
+          retention-days: 7

@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/laurajoyhutchins/gliner-rs/blob/master/contracts/http-extract-batch.schema.json",
+  "title": "GLiNER batch HTTP exchange",
+  "description": "External HTTP exchange contract. This schema validates JSON shapes and limits, not supported labels, checkpoint compatibility or inference correctness.",
+  "$ref": "#/$defs/request",
+  "$defs": {
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["texts"],
+      "properties": {
+        "model": {"type": "string"},
+        "texts": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": {"type": "string", "minLength": 1, "maxLength": 16384}
+        },
+        "entities": {"type": "array", "items": {"type": "string"}},
+        "relations": {"type": "array", "items": {"type": "string"}},
+        "json": {"type": "array", "items": {"type": "string"}},
+        "classify": {"type": "array", "items": {"type": "string"}},
+        "legacy_structures": {"type": "boolean"},
+        "threshold": {"type": "number", "minimum": 0, "maximum": 1},
+        "spans": {"type": "boolean"},
+        "confidence": {"type": "boolean"},
+        "overlap": {"type": "string", "enum": ["flat", "nested", "allow", "longest"]},
+        "max_words": {"type": ["integer", "null"], "minimum": 0}
+      },
+      "anyOf": [
+        {"required": ["entities"], "properties": {"entities": {"minItems": 1}}},
+        {"required": ["relations"], "properties": {"relations": {"minItems": 1}}},
+        {"required": ["json"], "properties": {"json": {"minItems": 1}}},
+        {"required": ["classify"], "properties": {"classify": {"minItems": 1}}}
+      ]
+    },
+    "response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model", "results"],
+      "properties": {
+        "model": {"type": "string"},
+        "results": {"type": "array", "minItems": 1, "maxItems": 64, "items": {"type": "object"}}
+      }
+    }
+  }
+}

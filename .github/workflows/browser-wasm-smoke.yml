@@ -1,0 +1,41 @@
+name: Chromium WebAssembly execution and pinned inference
+
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - '.cargo/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'website/src/wasm-pkg/**'
+      - 'website/src/lib/checkpoint-locks.json'
+      - 'website/browser-tests/**'
+      - '.github/workflows/browser-wasm-smoke.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  chromium-real-inference:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: website/browser-tests/package-lock.json
+      - name: Install pinned browser test harness
+        working-directory: website/browser-tests
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Install Chromium matching pinned Playwright
+        working-directory: website/browser-tests
+        run: npx playwright install --with-deps --only-shell chromium
+      - name: Exercise actual wasm-bindgen module and real immutable checkpoint
+        working-directory: website/browser-tests
+        env:
+          GLINER_REAL_CHECKPOINT: '1'
+        run: npm test

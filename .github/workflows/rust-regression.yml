@@ -21,6 +21,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - name: Syntax-check benchmark entry points
         run: python3 -m py_compile benchmarks/compare.py benchmarks/compare_rust_revisions.py
@@ -37,3 +39,5 @@ jobs:
         run: cargo test --locked --release --lib
       - name: Verify opt-in batch benchmark compiles
         run: cargo check --locked --example bench_bucketed
+      - name: Verify wasm32 library compiles without CLI/server features
+        run: cargo check --locked --target wasm32-unknown-unknown --no-default-features --lib

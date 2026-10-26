@@ -27,6 +27,25 @@ use crate::schema::{
     ClassActivation, ClassificationSpec, EntityDtype, FieldDtype, FieldSpec, Schema, StructureMode, StructureSpec,
 };
 
+/// Construct an in-memory safetensors-backed builder.
+///
+/// Native targets already have Candle's official safetensors adapter, which
+/// validates the container without cloning every weight into a tensor map.
+/// wasm32 temporarily retains the 32-bit-safe parser until upstream
+/// safetensors issue #817 / PR #818 is released and verified in the browser.
+fn in_memory_var_builder<'a>(weights: &'a [u8], device: &Device, dtype: DType) -> Result<VarBuilder<'a>> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        VarBuilder::from_slice_safetensors(weights, dtype, device).context("loading model.safetensors")
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        let tensors = crate::safetensors32::load_buffer(weights, device).context("loading model.safetensors")?;
+        Ok(VarBuilder::from_tensors(tensors, dtype, device))
+    }
+}
+
 /// A loaded checkpoint: either the current "boundary" architecture
 /// (`fastino/gliner2.5-*`) or the legacy "span" architecture (the PII/guardrail
 /// checkpoints — `gliner2-privacy-filter-PII-multi`, `GLiNER2-Guardrails-PII-Multi`,
@@ -446,8 +465,7 @@ impl BoundaryModel {
         let (config, encoder_config) = load_configs_str(config_json, encoder_config_json)?;
         let tokenizer =
             Tokenizer::from_bytes(tokenizer_bytes).map_err(|e| anyhow!("loading tokenizer.json: {e}"))?;
-        let tensors = crate::safetensors32::load_buffer(weights, device).context("loading model.safetensors")?;
-        let vb = VarBuilder::from_tensors(tensors, dtype, device);
+        let vb = in_memory_var_builder(weights, device, dtype)?;
         let head_vb = vb.clone().set_dtype(DType::F32);
         Self::from_parts(config, encoder_config, tokenizer, vb, head_vb, device)
     }
@@ -1425,8 +1443,7 @@ impl SpanModel {
         let (config, encoder_config) = load_span_configs_str(config_json, encoder_config_json)?;
         let tokenizer =
             Tokenizer::from_bytes(tokenizer_bytes).map_err(|e| anyhow!("loading tokenizer.json: {e}"))?;
-        let tensors = crate::safetensors32::load_buffer(weights, device).context("loading model.safetensors")?;
-        let vb = VarBuilder::from_tensors(tensors, dtype, device);
+        let vb = in_memory_var_builder(weights, device, dtype)?;
         let head_vb = vb.clone().set_dtype(DType::F32);
         Self::from_parts(config, encoder_config, tokenizer, vb, head_vb, device)
     }
@@ -1747,5 +1764,33 @@ mod length_bucket_regression {
         assert!(length_bucket_groups(&[]).is_empty());
         assert_eq!(length_bucket_groups(&[3000, 3000]), vec![vec![0], vec![1]]);
         assert_eq!(length_bucket_groups(&[0, 0, 0]).len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod in_memory_safetensors_tests {
+    use super::*;
+
+    fn tensor_bytes(header: &str, data: &[u8]) -> Vec<u8> {
+        let mut bytes = (header.len() as u64).to_le_bytes().to_vec();
+        bytes.extend_from_slice(header.as_bytes());
+        bytes.extend_from_slice(data);
+        bytes
+    }
+
+    #[test]
+    fn native_builder_loads_weights_with_official_parser() {
+        let header = r#"{"weights":{"dtype":"F32","shape":[1],"data_offsets":[0,4]}}"#;
+        let bytes = tensor_bytes(header, &1.25_f32.to_le_bytes());
+        let builder = in_memory_var_builder(&bytes, &Device::Cpu, DType::F32).unwrap();
+        let weights = builder.get(1, "weights").unwrap();
+        assert_eq!(weights.to_vec1::<f32>().unwrap(), vec![1.25]);
+    }
+
+    #[test]
+    fn native_builder_rejects_overlapping_tensor_ranges() {
+        let header = r#"{"a":{"dtype":"F32","shape":[1],"data_offsets":[0,4]},"b":{"dtype":"F32","shape":[1],"data_offsets":[0,4]}}"#;
+        let bytes = tensor_bytes(header, &1.25_f32.to_le_bytes());
+        assert!(in_memory_var_builder(&bytes, &Device::Cpu, DType::F32).is_err());
     }
 }

@@ -306,6 +306,97 @@ impl Processor {
         prefix
     }
 
+    /// Prepare independent texts against one shared schema without repeatedly
+    /// reconstructing or tokenizing the identical prompt. The tokenizer
+    /// already scores *each word separately* with special tokens disabled,
+    /// so concatenating these independently encoded pieces preserves the
+    /// exact token IDs and positions produced by repeated `prepare` calls.
+    ///
+    /// This cache exists only within a call: it cannot become stale when
+    /// a checkpoint, schema, or tokenizer configuration changes.
+    pub fn prepare_batch(&self, texts: &[&str], schema: &Schema, max_words: Option<usize>) -> Result<Vec<PreparedInput>> {
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut groups = Self::build_groups(schema);
+        let prefix_tokens = Self::choice_prefix(schema);
+        let mut combined: Vec<&str> = Vec::new();
+        let mut marker_owner: Vec<Option<(usize, bool)>> = Vec::new();
+        for (gi, group) in groups.iter().enumerate() {
+            for (ti, token) in group.tokens.iter().enumerate() {
+                combined.push(token);
+                if ti == 1 {
+                    marker_owner.push(Some((gi, true)));
+                } else {
+                    let marker = ti >= 4 && ti < group.tokens.len() - 2 && ti % 2 == 0;
+                    marker_owner.push(marker.then_some((gi, false)));
+                }
+            }
+            if gi + 1 < groups.len() {
+                combined.push(SEP_STRUCT);
+                marker_owner.push(None);
+            }
+        }
+        combined.push(SEP_TEXT);
+        marker_owner.push(None);
+        let text_start = combined.len();
+        for token in &prefix_tokens {
+            combined.push(token);
+            marker_owner.push(None);
+        }
+        let encodings = self.tokenizer.encode_batch(combined, false)
+            .map_err(|e| anyhow!("schema tokenization failed: {e}"))?;
+        let mut prompt_ids = Vec::new();
+        let mut prefix_positions = Vec::with_capacity(prefix_tokens.len());
+        for (i, encoding) in encodings.iter().enumerate() {
+            let position = prompt_ids.len();
+            if i >= text_start {
+                prefix_positions.push(position);
+            } else if let Some((gi, is_prompt)) = marker_owner[i] {
+                if is_prompt {
+                    groups[gi].prompt_position = position;
+                } else {
+                    groups[gi].marker_positions.push(position);
+                }
+            }
+            prompt_ids.extend_from_slice(encoding.get_ids());
+        }
+        let mut prepared = Vec::with_capacity(texts.len());
+        for &text in texts {
+            let text = if text.is_empty() {
+                ".".to_string()
+            } else if text.ends_with(['.', '!', '?']) {
+                text.to_string()
+            } else {
+                format!("{text}.")
+            };
+            let mut words = self.word_splitter.split(&text, true);
+            if let Some(max) = max_words {
+                words.truncate(max);
+            }
+            let mut input_ids = prompt_ids.clone();
+            let mut word_positions = prefix_positions.clone();
+            if !words.is_empty() {
+                let word_tokens: Vec<&str> = words.iter().map(|w| w.text.as_str()).collect();
+                let encoded_words = self.tokenizer.encode_batch(word_tokens, false)
+                    .map_err(|e| anyhow!("text tokenization failed: {e}"))?;
+                for encoding in encoded_words {
+                    word_positions.push(input_ids.len());
+                    input_ids.extend_from_slice(encoding.get_ids());
+                }
+            }
+            prepared.push(PreparedInput {
+                text,
+                input_ids,
+                prefix_tokens: prefix_tokens.clone(),
+                words,
+                word_positions,
+                groups: groups.clone(),
+            });
+        }
+        Ok(prepared)
+    }
+
     /// Build model inputs for one text (`_transform_record` + `_format_input_with_mapping`).
     pub fn prepare(&self, text: &str, schema: &Schema, max_words: Option<usize>) -> Result<PreparedInput> {
         let text = if text.is_empty() {

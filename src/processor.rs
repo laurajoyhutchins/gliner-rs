@@ -475,6 +475,40 @@ mod tests {
     use super::*;
 
     #[test]
+    fn batched_prompt_reuse_is_structurally_identical_to_independent_preparation() {
+        use std::collections::HashMap;
+        let vocab = HashMap::from([
+            ("[UNK]".to_string(), 0),
+            ("[P]".to_string(), 1),
+            ("[E]".to_string(), 2),
+            ("[SEP_TEXT]".to_string(), 3),
+            ("alice".to_string(), 4),
+            ("works".to_string(), 5),
+            ("bob".to_string(), 6),
+            ("paris".to_string(), 7),
+        ]);
+        let wordlevel = tokenizers::models::wordlevel::WordLevel::builder()
+            .vocab(vocab).unk_token("[UNK]".to_string()).build().unwrap();
+        let processor = Processor::new(Tokenizer::new(wordlevel));
+        let schema = Schema::new().entities(["person", "company", "location"]);
+        let texts = ["Alice works in Paris.", "Bob works here.", "", "电机运行在480伏。", " Alice  works"];
+        for max_words in [None, Some(0), Some(2)] {
+            let shared = processor.prepare_batch(&texts, &schema, max_words).unwrap();
+            assert_eq!(shared.len(), texts.len());
+            for (text, batch) in texts.iter().zip(&shared) {
+                let independent = processor.prepare(text, &schema, max_words).unwrap();
+                assert_eq!(batch.text, independent.text);
+                assert_eq!(batch.input_ids, independent.input_ids, "{text}");
+                assert_eq!(batch.word_positions, independent.word_positions, "{text}");
+                assert_eq!(batch.prefix_tokens, independent.prefix_tokens);
+                assert_eq!(batch.words, independent.words);
+                assert_eq!(format!("{:?}", batch.groups), format!("{:?}", independent.groups));
+            }
+        }
+        assert!(processor.prepare_batch(&[], &schema, None).unwrap().is_empty());
+    }
+
+    #[test]
     fn whitespace_splitter_matches_reference_patterns() {
         let words = WordSplitter::Whitespace.split("Email me at Bob.Smith@example.com, see https://x.io/a?b ok-ish", true);
         let texts: Vec<&str> = words.iter().map(|w| w.text.as_str()).collect();

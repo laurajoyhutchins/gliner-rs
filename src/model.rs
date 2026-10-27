@@ -700,7 +700,7 @@ impl BoundaryModel {
     pub fn extract_batch(&self, texts: &[&str], schema: &Schema, opts: &ExtractOptions) -> Result<Vec<Value>> {
         if texts.is_empty() { return Ok(Vec::new()); }
         let inputs: Vec<PreparedInput> =
-            texts.iter().map(|text| self.processor.prepare(text, schema, opts.max_words)).collect::<Result<_>>()?;
+            self.processor.prepare_batch(texts, schema, opts.max_words)?;
         let lengths: Vec<usize> = inputs.iter().map(|i| i.input_ids.len()).collect();
         match adaptive_length_groups(&lengths) {
             Some(groups) => self.extract_prepared_groups(&inputs, groups, schema, opts),
@@ -718,7 +718,7 @@ impl BoundaryModel {
     pub fn extract_batch_bucketed(&self, texts: &[&str], schema: &Schema, opts: &ExtractOptions) -> Result<Vec<Value>> {
         if texts.is_empty() { return Ok(Vec::new()); }
         let inputs: Vec<PreparedInput> =
-            texts.iter().map(|text| self.processor.prepare(text, schema, opts.max_words)).collect::<Result<_>>()?;
+            self.processor.prepare_batch(texts, schema, opts.max_words)?;
         let lengths: Vec<usize> = inputs.iter().map(|i| i.input_ids.len()).collect();
         self.extract_prepared_groups(&inputs, length_bucket_groups(&lengths), schema, opts)
     }
@@ -1656,7 +1656,7 @@ impl SpanModel {
             );
         }
         let inputs: Vec<PreparedInput> =
-            texts.iter().map(|text| self.processor.prepare(text, schema, opts.max_words)).collect::<Result<_>>()?;
+            self.processor.prepare_batch(texts, schema, opts.max_words)?;
         let states = self.encode_batch(&inputs)?;
         (0..texts.len())
             .map(|i| self.extract_from_states(&inputs[i], &states[i], texts[i], schema, opts))

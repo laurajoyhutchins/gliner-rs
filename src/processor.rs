@@ -488,7 +488,7 @@ mod tests {
             ("paris".to_string(), 7),
         ]);
         let wordlevel = tokenizers::models::wordlevel::WordLevel::builder()
-            .vocab(vocab).unk_token("[UNK]".to_string()).build().unwrap();
+            .vocab(vocab.into_iter().collect()).unk_token("[UNK]".to_string()).build().unwrap();
         let processor = Processor::new(Tokenizer::new(wordlevel));
         let schema = Schema::new().entities(["person", "company", "location"]);
         let texts = ["Alice works in Paris.", "Bob works here.", "", "电机运行在480伏。", " Alice  works"];

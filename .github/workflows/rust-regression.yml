@@ -36,12 +36,6 @@ jobs:
       - name: Checkpoint lock JSON Schema contract tests
         run: python3 -m unittest discover -s tests/contracts -p 'test_*.py' -v
 
-      # Temporary: have the Rust resolver show the exact lockfile delta so it can be committed.
-      - name: Diagnose Cargo lock resolution
-        run: |
-          cargo metadata --format-version 1 > /dev/null
-          git diff -- Cargo.lock
-          test -z "$(git diff -- Cargo.lock)"
       - name: Offline-independent library regression tests
         run: cargo test --locked --release --lib
       - name: Verify opt-in batch benchmark compiles
